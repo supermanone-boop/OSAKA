@@ -21,6 +21,11 @@ a{color:#85c9ff}
   "imports": {
     "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
     "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  },
+  "scopes": {
+    "https://unpkg.com/three@0.160.0/": {
+      "three": "https://unpkg.com/three@0.160.0/build/three.module.js"
+    }
   }
 }
 </script>
@@ -31,7 +36,7 @@ a{color:#85c9ff}
   <p class="sub">OpenStreetMap の高速道路線形 + 国土地理院 DEM 標高から、道路面・車線・防護柵・高架床版・橋脚を含む GLB を生成します。</p>
 
   <section class="panel">
-    <div id="status">待機中</div>
+    <div id="status">ページを読み込みました。3Dライブラリを確認します…</div>
     <div class="bar"><i id="progress"></i></div>
     <div class="grid">
       <div class="metric"><b id="mWays">—</b><span>取得した道路ウェイ</span></div>
@@ -68,11 +73,53 @@ if (location.protocol === 'file:') {
   document.getElementById('build').disabled = true;
 }
 </script>
-<script type="module">
-import * as THREE from 'three';
-import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
-
+<script>
+(async function bootGenerator(){
 const $ = id => document.getElementById(id);
+const setBootError = (title, detail) => {
+  const status = $('status'), log = $('log'), button = $('build');
+  if (status) status.textContent = title;
+  if (button) button.disabled = true;
+  if (log) log.textContent = `${title}\n${detail}\n\nこの画面のエラー全文を送ってください。`;
+};
+window.addEventListener('error', e => {
+  const msg = e.message || e.error?.message || '不明なJavaScriptエラー';
+  if ($('log')) { $('status').textContent = 'JavaScriptエラー'; $('log').textContent += `\nSCRIPT ERROR: ${msg} (${e.filename || ''}:${e.lineno || ''})`; }
+});
+window.addEventListener('unhandledrejection', e => {
+  const msg = String(e.reason?.stack || e.reason || '不明な非同期エラー');
+  if ($('log')) { $('status').textContent = '非同期処理エラー'; $('log').textContent += `\nPROMISE ERROR: ${msg}`; }
+});
+$('status').textContent = '3Dライブラリを読み込み中…';
+$('log').textContent = 'Three.js / GLTFExporter の読み込みを確認しています。';
+let THREE, GLTFExporter;
+const libraryMirrors = [
+  {name:'jsDelivr',three:'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js',exporter:'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/exporters/GLTFExporter.js'},
+  {name:'unpkg',three:'https://unpkg.com/three@0.160.0/build/three.module.js',exporter:'https://unpkg.com/three@0.160.0/examples/jsm/exporters/GLTFExporter.js'}
+];
+const libraryErrors = [];
+for (const mirror of libraryMirrors) {
+  try {
+    $('status').textContent = `3Dライブラリを読み込み中… (${mirror.name})`;
+    const threeModule = await import(mirror.three);
+    const exporterModule = await import(mirror.exporter);
+    if (!threeModule?.Scene || !exporterModule?.GLTFExporter) throw new Error('必要なライブラリの機能が見つかりません');
+    THREE = threeModule;
+    GLTFExporter = exporterModule.GLTFExporter;
+    log(`3Dライブラリ読込成功: ${mirror.name}`);
+    break;
+  } catch (error) {
+    console.error(mirror.name, error);
+    libraryErrors.push(`${mirror.name}: ${String(error?.stack || error)}`);
+  }
+}
+if (!THREE || !GLTFExporter) {
+  setBootError('3Dライブラリの読み込みに失敗しました', libraryErrors.join('\n\n'));
+  return;
+}
+$('status').textContent = '準備完了';
+$('log').textContent = '3Dライブラリの読み込みに成功しました。生成ボタンを押してください。';
+
 const MAX_BYTES = 100 * 1024 * 1024;
 const OVERPASS = [
   'https://overpass-api.de/api/interpreter',
@@ -435,7 +482,7 @@ function buildScene(roads,projection,quality){
   return {scene,pierCount,roadCount};
 }
 function interpGround(points,s){let lo=0,hi=points.length-1;while(lo<hi){const mid=(lo+hi)>>1;if(points[mid].s<s)lo=mid+1;else hi=mid;}const i=Math.max(1,lo),a=points[i-1],b=points[i],t=Math.max(0,Math.min(1,(s-a.s)/(b.s-a.s||1)));return a.ground+(b.ground-a.ground)*t;}
-function exportGlb(scene){return new Promise((resolve,reject)=>{const exporter=new GLTFExporter();exporter.parse(scene,result=>resolve(new Blob([result],{type:'model/gltf-binary'})),error=>reject(error),{binary:true,onlyVisible:true,trs:false});});}
+function exportGlb(scene){return new Promise((resolve,reject)=>{const exporter=new GLTFExporter();exporter.parse(scene,result=>resolve(new Blob([result],{type:'model/gltf-binary'})),error=>reject(error||new Error('GLTFExporter failed')),{binary:true,onlyVisible:true,trs:false});});}
 
 async function runBuild(){
   if(isRunning)return;isRunning=true;$('build').disabled=true;$('download').disabled=true;$('manifest').disabled=true;generatedBlob=null;generatedManifest=null;$('log').textContent='';
@@ -495,6 +542,12 @@ async function runBuild(){
 $('build').addEventListener('click',runBuild);
 $('download').addEventListener('click',()=>{if(generatedBlob)downloadBlob(generatedBlob,generatedName);});
 $('manifest').addEventListener('click',()=>{if(generatedManifest){const blob=new Blob([JSON.stringify(generatedManifest,null,2)],{type:'application/json'});downloadBlob(blob,'Osaka_Expressway_manifest.json');}});
+})().catch(error => {
+  console.error(error);
+  const status=document.getElementById('status'), log=document.getElementById('log');
+  if(status) status.textContent='起動エラー';
+  if(log) log.textContent += '\nBOOT ERROR: '+String(error?.stack || error);
+});
 </script>
 </body>
 </html>
