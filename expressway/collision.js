@@ -19,7 +19,7 @@
   // v7で作成した道路三角形データを再利用する。
   // 変更点はGeoFSのcollisionTriangles形式とobject定義。
   const DATA_URL =
-    "https://huggingface.co/supermanone-boop/OSAKA/resolve/main/Osaka_Expressways_RoadCollision_v7.bin.gz";
+    "https://huggingface.co/supermanone-boop/hankyu/resolve/main/Osaka_Expressways_RoadCollision_v7.bin.gz";
   const LOAD_RADIUS_M = 2200;
   const UPDATE_INTERVAL_MS = 1500;
   const TAG = "__osakaExpresswayRoadCollisionV9";
