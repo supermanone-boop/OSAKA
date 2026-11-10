@@ -14,7 +14,7 @@
     return;
   }
 
-  const MODEL_GZ="https://huggingface.co/supermanone-boop/hankyu/resolve/main/Osaka_Expressways_Realistic_v6.glb.gz";
+  const MODEL_GZ="https://huggingface.co/supermanone-boop/hankyu/resolve/mainOsaka_Expressways_Realistic_v7_optimized_130.glb.gz";
 
   const ANCHOR_LON=135.51052305;
   const ANCHOR_LAT=34.74052680;
