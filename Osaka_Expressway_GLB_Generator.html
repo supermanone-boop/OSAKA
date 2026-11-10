@@ -1,0 +1,484 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<title>大阪府 高速道路 GLB 生成器</title>
+<style>
+:root{color-scheme:dark;--bg:#101419;--panel:#1a222b;--line:#34414d;--text:#edf2f7;--muted:#aab7c4;--accent:#55c2a0;--warn:#f2c66d}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px/1.55 system-ui,-apple-system,"Noto Sans JP",sans-serif}
+main{max-width:900px;margin:0 auto;padding:22px 16px 44px}h1{font-size:25px;line-height:1.3;margin:0 0 8px}h2{font-size:17px;margin:24px 0 8px}.sub{color:var(--muted);margin:0 0 18px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:15px;margin:12px 0}
+button{appearance:none;border:0;border-radius:10px;background:var(--accent);color:#081510;font-weight:800;padding:14px 18px;font-size:16px;width:100%;cursor:pointer}button:disabled{opacity:.45;cursor:default}.secondary{background:#334454;color:var(--text);margin-top:9px}.danger{background:#5b3d32;color:#fff}.bar{height:11px;border-radius:20px;background:#303b45;overflow:hidden;margin:10px 0}.bar>i{display:block;height:100%;width:0;background:var(--accent);transition:width .15s}
+#status{font-weight:700}#log{white-space:pre-wrap;overflow:auto;max-height:230px;color:#c5d1dc;font:12px/1.55 ui-monospace,monospace;background:#0b0f13;border-radius:9px;padding:10px}
+.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.metric{background:#111920;border-radius:9px;padding:10px}.metric b{display:block;font-size:19px;font-variant-numeric:tabular-nums}.metric span{font-size:12px;color:var(--muted)}
+.note{font-size:13px;color:var(--muted)}.warning{color:var(--warn)}.ok{color:var(--accent)}.small{font-size:12px;color:var(--muted)}
+a{color:#85c9ff}
+@media(max-width:600px){main{padding:16px 12px 32px}h1{font-size:21px}.grid{grid-template-columns:1fr 1fr}}
+</style>
+</head>
+<body>
+<main>
+  <h1>大阪府 高速道路 3Dモデル生成器</h1>
+  <p class="sub">OpenStreetMap の高速道路線形 + 国土地理院 DEM 標高から、道路面・車線・防護柵・高架床版・橋脚を含む GLB を生成します。</p>
+
+  <section class="panel">
+    <div id="status">待機中</div>
+    <div class="bar"><i id="progress"></i></div>
+    <div class="grid">
+      <div class="metric"><b id="mWays">—</b><span>取得した道路ウェイ</span></div>
+      <div class="metric"><b id="mKm">—</b><span>道路延長</span></div>
+      <div class="metric"><b id="mElev">—</b><span>標高サンプル</span></div>
+      <div class="metric"><b id="mPiers">—</b><span>生成した橋脚</span></div>
+    </div>
+    <button id="build">大阪府全域の高速道路 GLB を生成</button>
+    <button id="download" class="secondary" disabled>GLB をダウンロード</button>
+    <button id="manifest" class="secondary" disabled>配置情報 JSON をダウンロード</button>
+  </section>
+
+  <section class="panel">
+    <h2>生成仕様</h2>
+    <p>対象：大阪府行政区域内の <code>highway=motorway</code> / <code>motorway_link</code>。ランプ・本線を含みます。</p>
+    <p>道路幅：OSM の <code>width</code>・<code>lanes</code> を優先。欠損時は車線数と日本の高速道路の標準的な幅員から補完します。</p>
+    <p>標高：国土地理院 DEM5A → DEM5B → DEM5C → DEM10B の順で取得し、DEM の欠測地点は次の解像度へフォールバックします。</p>
+    <p>高架：OSM の <code>bridge</code>・<code>layer</code>・<code>tunnel</code> を使い、橋面オフセットと接続点の高さを滑らかに補正します。橋脚位置・間隔が記録されていない区間は、道路線形に沿って自動配置します。</p>
+    <p class="note warning">重要：OSMには全区間の実測橋面高・橋脚座標が揃っていません。橋面の高さと橋脚間隔はタグからの推定値を含みます。設計図・道路台帳・点群による測量精度や、実測値での無干渉を保証するモデルではありません。</p>
+  </section>
+
+  <section class="panel">
+    <h2>処理ログ</h2>
+    <div id="log">生成器を読み込みました。ボタンを押すとデータ取得を開始します。</div>
+  </section>
+  <p class="small">データ出典：© OpenStreetMap contributors（ODbL）／国土地理院 標高タイル。生成した GLB はローカル座標系です。配置情報 JSON に原点経緯度・使用データ・推定条件を記録します。</p>
+</main>
+
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
+import { GLTFExporter } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/exporters/GLTFExporter.js';
+
+const $ = id => document.getElementById(id);
+const MAX_BYTES = 100 * 1024 * 1024;
+const OVERPASS = [
+  'https://overpass-api.de/api/interpreter',
+  'https://overpass.kumi.systems/api/interpreter',
+  'https://overpass.private.coffee/api/interpreter'
+];
+const DEM_SOURCES = [
+  {name:'DEM5A',z:15,path:'dem5a_png'},
+  {name:'DEM5B',z:15,path:'dem5b_png'},
+  {name:'DEM5C',z:15,path:'dem5c_png'},
+  {name:'DEM10B',z:14,path:'dem_png'}
+];
+let generatedBlob = null;
+let generatedManifest = null;
+let generatedName = 'Osaka_Expressway_Network.glb';
+let isRunning = false;
+
+function log(message){ $('log').textContent += '\n' + message; $('log').scrollTop = $('log').scrollHeight; }
+function status(message,pct){ $('status').textContent=message; if(Number.isFinite(pct)) $('progress').style.width=Math.max(0,Math.min(100,pct))+'%'; }
+function metric(id,value){$(id).textContent=value;}
+function downloadBlob(blob,name){const url=URL.createObjectURL(blob);const a=document.createElement('a');a.href=url;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),5000);}
+function osmQuery(){return `[out:json][timeout:900][maxsize:1073741824];\narea["boundary"="administrative"]["admin_level"="4"]["name"="大阪府"]->.osaka;\nway(area.osaka)["highway"~"^(motorway|motorway_link)$"];\nout body geom qt;`;}
+
+async function fetchOverpass(){
+  const query=osmQuery(); let lastError=null;
+  for(const endpoint of OVERPASS){
+    try{
+      log('Overpass API: '+endpoint);
+      const controller=new AbortController(); const timer=setTimeout(()=>controller.abort(),240000);
+      let response;
+      try{response=await fetch(endpoint,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},body:new URLSearchParams({data:query}),signal:controller.signal});}
+      finally{clearTimeout(timer);}
+      if(!response.ok) throw new Error('HTTP '+response.status);
+      const data=await response.json();
+      if(!data.elements || !Array.isArray(data.elements)) throw new Error('Overpass 応答に elements がありません');
+      const ways=data.elements.filter(e=>e.type==='way' && e.geometry && e.geometry.length>=2 && e.tags && ['motorway','motorway_link'].includes(e.tags.highway));
+      if(!ways.length) throw new Error('対象道路が0件でした。行政区域クエリを確認してください');
+      log(`取得完了: ${ways.length.toLocaleString()} ways`);
+      return {ways, timestamp:data.osm3s?.timestamp_osm_base||null, endpoint};
+    }catch(e){lastError=e;log('失敗: '+String(e.message||e));}
+  }
+  throw new Error('すべての Overpass API に接続できませんでした: '+String(lastError?.message||lastError));
+}
+
+function parseMeters(value){if(value==null)return null;const m=String(value).replace(',','.').match(/-?\d+(?:\.\d+)?/);if(!m)return null;const n=Number(m[0]);return Number.isFinite(n)&&n>0?n:null;}
+function laneCount(tags){
+  const raw=Number(tags.lanes);
+  if(Number.isFinite(raw)&&raw>=1&&raw<=12)return Math.round(raw);
+  const f=Number(tags['lanes:forward']),b=Number(tags['lanes:backward']);
+  if(Number.isFinite(f)||Number.isFinite(b))return Math.max(1,Math.min(12,(Number.isFinite(f)?f:0)+(Number.isFinite(b)?b:0)));
+  return tags.oneway==='yes'?2:4;
+}
+function roadWidth(tags){
+  const explicit=parseMeters(tags.width);
+  if(explicit&&explicit>=3&&explicit<=40)return explicit;
+  const lanes=laneCount(tags);
+  return Math.max(5.2,Math.min(25,lanes*3.5+2.4));
+}
+function isBridge(tags){return !!(tags.bridge && tags.bridge!=='no') || Number(tags.layer||0)>0;}
+function isTunnel(tags){return !!(tags.tunnel && tags.tunnel!=='no') || Number(tags.layer||0)<0;}
+function deckOffset(tags){
+  const layer=Number(tags.layer||0)||0;
+  if(isTunnel(tags)) return layer<0 ? layer*4.8 : -4.5;
+  if(layer>0) return 6.2+(layer-1)*5.0;
+  if(isBridge(tags)) return 6.2;
+  return 0.18;
+}
+
+function toTile(lon,lat,z){
+  const n=2**z; const x=(lon+180)/360*n; const latRad=Math.max(-85.05112878,Math.min(85.05112878,lat))*Math.PI/180;
+  const y=(1-Math.asinh(Math.tan(latRad))/Math.PI)/2*n;
+  const tx=Math.max(0,Math.min(n-1,Math.floor(x))),ty=Math.max(0,Math.min(n-1,Math.floor(y)));
+  return {x:tx,y:ty,px:(x-tx)*256,py:(y-ty)*256};
+}
+let activeTileFetches=0;const tileQueue=[];const tileCache=new Map();
+function limited(task){return new Promise((resolve,reject)=>{tileQueue.push({task,resolve,reject});pumpTiles();});}
+function pumpTiles(){while(activeTileFetches<6&&tileQueue.length){const job=tileQueue.shift();activeTileFetches++;Promise.resolve().then(job.task).then(job.resolve,job.reject).finally(()=>{activeTileFetches--;pumpTiles();});}}
+async function loadDemTile(source,tx,ty){
+  const key=source.path+'/'+source.z+'/'+tx+'/'+ty;
+  if(tileCache.has(key))return tileCache.get(key);
+  const promise=limited(async()=>{
+    const url=`https://cyberjapandata.gsi.go.jp/xyz/${source.path}/${source.z}/${tx}/${ty}.png`;
+    const response=await fetch(url,{mode:'cors'}); if(!response.ok)throw new Error('tile '+response.status);
+    const bitmap=await createImageBitmap(await response.blob());
+    const canvas=document.createElement('canvas');canvas.width=256;canvas.height=256;
+    const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(bitmap,0,0);bitmap.close?.();
+    const rgba=ctx.getImageData(0,0,256,256).data;
+    const rgb=new Uint8Array(256*256*3);
+    for(let i=0,j=0;i<rgba.length;i+=4){rgb[j++]=rgba[i];rgb[j++]=rgba[i+1];rgb[j++]=rgba[i+2];}
+    return rgb;
+  });
+  tileCache.set(key,promise);
+  try{return await promise;}catch(e){tileCache.delete(key);return null;}
+}
+function decodeDem(rgb,index){
+  const p=index*3,r=rgb[p],g=rgb[p+1],b=rgb[p+2];
+  const x=65536*r+256*g+b;
+  if(x===8388608)return null;
+  return x<8388608?x*0.01:(x-16777216)*0.01;
+}
+async function elevationAt(lon,lat){
+  for(const source of DEM_SOURCES){
+    const t=toTile(lon,lat,source.z);const rgb=await loadDemTile(source,t.x,t.y);if(!rgb)continue;
+    const ix=Math.max(0,Math.min(255,Math.floor(t.px))),iy=Math.max(0,Math.min(255,Math.floor(t.py)));
+    const value=decodeDem(rgb,iy*256+ix);if(value!==null&&Number.isFinite(value))return value;
+  }
+  return null;
+}
+
+function localProjection(ways){
+  let minLon=Infinity,maxLon=-Infinity,minLat=Infinity,maxLat=-Infinity;
+  for(const w of ways)for(const p of w.geometry){minLon=Math.min(minLon,p.lon);maxLon=Math.max(maxLon,p.lon);minLat=Math.min(minLat,p.lat);maxLat=Math.max(maxLat,p.lat);}
+  const lon0=(minLon+maxLon)/2,lat0=(minLat+maxLat)/2,cos=Math.cos(lat0*Math.PI/180);
+  const mx=111319.49079327358*cos,my=110574.0;
+  return {lon0,lat0,mx,my,project:(lon,lat)=>({x:(lon-lon0)*mx,z:-(lat-lat0)*my}),unproject:(x,z)=>({lon:lon0+x/mx,lat:lat0-z/my})};
+}
+function distance(a,b){return Math.hypot(b.x-a.x,b.z-a.z);}
+function makeRoads(rawWays,projection,spacing){
+  const roads=[];let totalLength=0,explicitWidth=0,explicitLanes=0;
+  for(const w of rawWays){
+    const geom=w.geometry;const tags=w.tags||{};const samples=[];let s=0;
+    const first=projection.project(geom[0].lon,geom[0].lat);samples.push({...first,lon:geom[0].lon,lat:geom[0].lat,node:w.nodes?.[0]??null,s:0,ground:0,y:0});
+    for(let i=0;i<geom.length-1;i++){
+      const a=geom[i],b=geom[i+1],pa=projection.project(a.lon,a.lat),pb=projection.project(b.lon,b.lat);
+      const len=distance(pa,pb);if(len<0.01)continue;const n=Math.max(1,Math.ceil(len/spacing));
+      for(let k=1;k<=n;k++){
+        const t=k/n,lon=a.lon+(b.lon-a.lon)*t,lat=a.lat+(b.lat-a.lat)*t;
+        const q=projection.project(lon,lat);s+=len/n;
+        const isEnd=k===n;
+        samples.push({...q,lon,lat,node:isEnd?(w.nodes?.[i+1]??null):null,s,ground:0,y:0});
+      }
+    }
+    if(samples.length<2)continue;
+    const lanes=laneCount(tags),width=roadWidth(tags),bridge=isBridge(tags),tunnel=isTunnel(tags);
+    roads.push({id:w.id,tags,nodes:w.nodes||[],points:samples,length:s,width,lanes,bridge,tunnel,offset:deckOffset(tags),hasExplicitWidth:parseMeters(tags.width)!==null,hasExplicitLanes:tags.lanes!=null||tags['lanes:forward']!=null||tags['lanes:backward']!=null});
+    totalLength+=s;if(parseMeters(tags.width)!==null)explicitWidth++;if(tags.lanes!=null||tags['lanes:forward']!=null||tags['lanes:backward']!=null)explicitLanes++;
+  }
+  return {roads,totalLength,explicitWidth,explicitLanes};
+}
+function smoothValues(values){
+  if(values.length<3)return values.slice();
+  return values.map((v,i)=>{if(i===0||i===values.length-1)return v;return (values[i-1]+2*v+values[i+1])/4;});
+}
+function smoothstep(t){t=Math.max(0,Math.min(1,t));return t*t*(3-2*t);}
+function reconcileJunctions(roads){
+  const nodeMap=new Map();
+  for(const r of roads){
+    const p0=r.points[0],p1=r.points[r.points.length-1];
+    for(const [p,idx] of [[p0,0],[p1,r.points.length-1]]){
+      if(p.node==null)continue;
+      if(!nodeMap.has(p.node))nodeMap.set(p.node,[]);
+      nodeMap.get(p.node).push({road:r,index:idx,y:p.y});
+    }
+  }
+  let linked=0;
+  for(const list of nodeMap.values()){
+    if(list.length<2)continue;
+    const vals=list.map(x=>x.y).sort((a,b)=>a-b);const target=vals[Math.floor(vals.length/2)];
+    for(const item of list){
+      const p=item.road.points,at=item.index,delta=target-p[at].y;if(Math.abs(delta)>12)continue;
+      const direction=at===0?1:-1;
+      for(let i=0;i<p.length;i++){
+        const idx=at===0?i:p.length-1-i,dist=Math.abs(p[idx].s-p[at].s);if(dist>85)break;
+        const f=1-smoothstep(dist/85);p[idx].y+=delta*f;
+      }
+    }
+    linked++;
+  }
+  return linked;
+}
+
+function createAccum(){return {positions:[],uvs:[],indices:[]};}
+function addVertex(a,p,u=0,v=0){const i=a.positions.length/3;a.positions.push(p.x,p.y,p.z);a.uvs.push(u,v);return i;}
+function addQuad(a,p0,p1,p2,p3,uvs){const base=a.positions.length/3;addVertex(a,p0,uvs?.[0]?.[0]??0,uvs?.[0]?.[1]??0);addVertex(a,p1,uvs?.[1]?.[0]??1,uvs?.[1]?.[1]??0);addVertex(a,p2,uvs?.[2]?.[0]??1,uvs?.[2]?.[1]??1);addVertex(a,p3,uvs?.[3]?.[0]??0,uvs?.[3]?.[1]??1);a.indices.push(base,base+1,base+2,base,base+2,base+3);}
+function pathFrames(points,halfWidth){
+  const frames=[];
+  for(let i=0;i<points.length;i++){
+    const a=points[Math.max(0,i-1)],b=points[Math.min(points.length-1,i+1)];let tx=b.x-a.x,tz=b.z-a.z;const tl=Math.hypot(tx,tz)||1;tx/=tl;tz/=tl;
+    const nx=-tz,nz=tx;
+    const prev=points[Math.max(0,i-1)],cur=points[i],next=points[Math.min(points.length-1,i+1)];
+    let npx=-(cur.z-prev.z),npz=cur.x-prev.x,nnx=-(next.z-cur.z),nnz=next.x-cur.x;
+    let pl=Math.hypot(npx,npz)||1,nl=Math.hypot(nnx,nnz)||1;npx/=pl;npz/=pl;nnx/=nl;nnz/=nl;
+    let mx=npx+nnx,mz=npz+nnz,ml=Math.hypot(mx,mz);if(ml<1e-4){mx=nx;mz=nz;ml=1;}mx/=ml;mz/=ml;
+    let denom=mx*nnx+mz*nnz;if(Math.abs(denom)<0.25)denom=0.25;
+    let m=halfWidth/denom;m=Math.max(-halfWidth*2.5,Math.min(halfWidth*2.5,m));
+    frames.push({x:cur.x,z:cur.z,y:cur.y,nx:mx*m,nz:mz*m,tx,tz});
+  }
+  return frames;
+}
+function addRoadTop(acc,road){
+  const pts=road.points,half=road.width/2,frames=pathFrames(pts,half),base=acc.positions.length/3;
+  for(let i=0;i<frames.length;i++){
+    const f=frames[i],p=pts[i],v=p.s/32;
+    addVertex(acc,{x:f.x+f.nx,y:p.y+0.035,z:f.z+f.nz},0,v);
+    addVertex(acc,{x:f.x-f.nx,y:p.y+0.035,z:f.z-f.nz},1,v);
+  }
+  for(let i=0;i<frames.length-1;i++){const l=base+i*2,r=l+1,ln=l+2,rn=l+3;acc.indices.push(l,ln,r,r,ln,rn);}
+  return frames;
+}
+function addDeckSlab(acc,road,frames){
+  const pts=road.points,top=-0.02,bottom=-0.58,base=acc.positions.length/3;
+  for(let i=0;i<frames.length;i++){
+    const f=frames[i],p=pts[i];
+    addVertex(acc,{x:f.x+f.nx,y:p.y+bottom,z:f.z+f.nz},0,p.s/30);
+    addVertex(acc,{x:f.x-f.nx,y:p.y+bottom,z:f.z-f.nz},1,p.s/30);
+  }
+  for(let i=0;i<frames.length-1;i++){const l=base+i*2,r=l+1,ln=l+2,rn=l+3;acc.indices.push(l,r,ln,r, rn,ln);}
+  // Side fascia strips
+  for(const side of [-1,1]){
+    const b=acc.positions.length/3;
+    for(let i=0;i<frames.length;i++){
+      const f=frames[i],p=pts[i],sx=side;
+      const x=f.x+f.nx*sx,z=f.z+f.nz*sx;
+      addVertex(acc,{x,y:p.y+0.035,z},0,p.s/30);
+      addVertex(acc,{x,y:p.y+bottom,z},1,p.s/30);
+    }
+    for(let i=0;i<frames.length-1;i++){const a=b+i*2,c=a+1,d=a+2,e=a+3;acc.indices.push(a,d,c,c,d,e);}
+  }
+}
+function addLaneMarkings(acc,road,frames){
+  const lanes=Math.max(1,Math.min(8,road.lanes));if(lanes<2)return;
+  const dash=6.0,gap=9.0,period=dash+gap,half=0.075;
+  for(let lane=1;lane<lanes;lane++){
+    const across=-road.width/2+road.width*lane/lanes;
+    for(let start=0;start<road.length;start+=period){
+      const end=Math.min(road.length,start+dash);if(end-start<1.5)continue;
+      const p0=interpRoadPoint(road.points,start),p1=interpRoadPoint(road.points,end);
+      const f0=interpFrame(road.points,frames,start),f1=interpFrame(road.points,frames,end);
+      const q0={x:f0.x+f0.nx*(across/(road.width/2)),z:f0.z+f0.nz*(across/(road.width/2)),y:p0.y+0.055};
+      const q1={x:f1.x+f1.nx*(across/(road.width/2)),z:f1.z+f1.nz*(across/(road.width/2)),y:p1.y+0.055};
+      const dx=q1.x-q0.x,dz=q1.z-q0.z,len=Math.hypot(dx,dz)||1,nx=-dz/len*half,nz=dx/len*half;
+      addQuad(acc,{x:q0.x+nx,y:q0.y,z:q0.z+nz},{x:q1.x+nx,y:q1.y,z:q1.z+nz},{x:q1.x-nx,y:q1.y,z:q1.z-nz},{x:q0.x-nx,y:q0.y,z:q0.z-nz});
+    }
+  }
+  // Solid edge lines
+  for(const side of [-1,1]){
+    const b=acc.positions.length/3;
+    for(let i=0;i<frames.length;i++){
+      const f=frames[i],p=road.points[i],scale=side*(road.width/2-0.32),w=0.065;
+      const ratio=scale/(road.width/2),x=f.x+f.nx*ratio,z=f.z+f.nz*ratio;
+      const nx=-f.tz*w,nz=f.tx*w;
+      addVertex(acc,{x:x+nx,y:p.y+0.055,z:z+nz},0,p.s/30);
+      addVertex(acc,{x:x-nx,y:p.y+0.055,z:z-nz},1,p.s/30);
+    }
+    for(let i=0;i<frames.length-1;i++){const l=b+i*2,r=l+1,ln=l+2,rn=l+3;acc.indices.push(l,ln,r,r,ln,rn);}
+  }
+}
+function interpRoadPoint(points,s){let lo=0,hi=points.length-1;while(lo<hi){const mid=(lo+hi)>>1;if(points[mid].s<s)lo=mid+1;else hi=mid;}const i=Math.max(1,lo),a=points[i-1],b=points[i],t=Math.max(0,Math.min(1,(s-a.s)/(b.s-a.s||1)));return {x:a.x+(b.x-a.x)*t,z:a.z+(b.z-a.z)*t,y:a.y+(b.y-a.y)*t,s};}
+function interpFrame(points,frames,s){let lo=0,hi=points.length-1;while(lo<hi){const mid=(lo+hi)>>1;if(points[mid].s<s)lo=mid+1;else hi=mid;}const i=Math.max(1,lo),a=frames[i-1],b=frames[i],pa=points[i-1],pb=points[i],t=Math.max(0,Math.min(1,(s-pa.s)/(pb.s-pa.s||1)));return {x:a.x+(b.x-a.x)*t,z:a.z+(b.z-a.z)*t,nx:a.nx+(b.nx-a.nx)*t,nz:a.nz+(b.nz-a.nz)*t,tx:a.tx+(b.tx-a.tx)*t,tz:a.tz+(b.tz-a.tz)*t};}
+function addWall(acc,frames,points,side,baseHeight,topHeight,extraOffset=0){
+  const base=acc.positions.length/3;
+  for(let i=0;i<frames.length;i++){
+    const f=frames[i],p=points[i],ratio=side*(1+extraOffset/(Math.max(1,1))),x=f.x+f.nx*ratio,z=f.z+f.nz*ratio;
+    addVertex(acc,{x,y:p.y+baseHeight,z},0,p.s/20);addVertex(acc,{x,y:p.y+topHeight,z},1,p.s/20);
+  }
+  for(let i=0;i<frames.length-1;i++){const a=base+i*2,b=a+1,c=a+2,d=a+3;acc.indices.push(a,c,b,b,c,d);}
+}
+function pushBox(acc,cx,cy,cz,tx,tz,along,across,height){
+  const len=Math.hypot(tx,tz)||1;tx/=len;tz/=len;const nx=-tz,nz=tx;
+  const corners=[];for(const yy of [-height/2,height/2])for(const aa of [-1,1])for(const bb of [-1,1])corners.push({x:cx+tx*aa*along/2+nx*bb*across/2,y:cy+yy,z:cz+tz*aa*along/2+nz*bb*across/2});
+  const faces=[[0,1,3,2],[4,6,7,5],[0,4,5,1],[2,3,7,6],[0,2,6,4],[1,5,7,3]];
+  for(const f of faces)addQuad(acc,corners[f[0]],corners[f[1]],corners[f[2]],corners[f[3]]);
+}
+function pushPier(acc,x,z,groundY,deckY,tx,tz){
+  const top=deckY-0.62,bottom=groundY+0.25;if(top-bottom<2.0)return false;
+  const len=Math.hypot(tx,tz)||1;tx/=len;tz/=len;const nx=-tz,nz=tx;
+  const n=8,ring=[];
+  for(const [y,r] of [[bottom,0.95],[top,0.78]]){
+    for(let i=0;i<n;i++){const a=2*Math.PI*i/n;const along=Math.cos(a)*r,across=Math.sin(a)*r;ring.push({x:x+tx*along+nx*across,y,z:z+tz*along+nz*across});}
+  }
+  for(let i=0;i<n;i++){const j=(i+1)%n;addQuad(acc,ring[i],ring[j],ring[n+j],ring[n+i]);}
+  const b=acc.positions.length/3;for(let i=0;i<n;i++)addVertex(acc,ring[i]);for(let i=0;i<n;i++)addVertex(acc,ring[n+i]);
+  for(let i=1;i<n-1;i++){acc.indices.push(b,b+i,b+i+1,b+n,b+n+i+1,b+n+i);}
+  return true;
+}
+function makeNoiseTexture(base,variation,seed=1){
+  const canvas=document.createElement('canvas');canvas.width=512;canvas.height=512;const ctx=canvas.getContext('2d');const img=ctx.createImageData(512,512);let s=seed>>>0;
+  const rand=()=>{s=(1664525*s+1013904223)>>>0;return s/4294967296;};
+  for(let i=0;i<512*512;i++){const n=(rand()-0.5)*variation;img.data[i*4]=Math.max(0,Math.min(255,base[0]+n));img.data[i*4+1]=Math.max(0,Math.min(255,base[1]+n));img.data[i*4+2]=Math.max(0,Math.min(255,base[2]+n));img.data[i*4+3]=255;}
+  ctx.putImageData(img,0,0);
+  // Tiny, low-contrast aggregate marks, repeated seamlessly enough at road scale.
+  for(let i=0;i<14000;i++){const x=rand()*512,y=rand()*512,r=rand()*0.85+0.15;ctx.fillStyle=rand()>.5?'rgba(205,210,210,.10)':'rgba(8,10,12,.12)';ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();}
+  const tex=new THREE.CanvasTexture(canvas);tex.colorSpace=THREE.SRGBColorSpace;tex.wrapS=THREE.RepeatWrapping;tex.wrapT=THREE.RepeatWrapping;tex.anisotropy=4;return tex;
+}
+function geometryFromAccum(a){if(!a.indices.length)return null;const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(a.positions,3));if(a.uvs.length)g.setAttribute('uv',new THREE.Float32BufferAttribute(a.uvs,2));g.setIndex(a.indices);g.computeVertexNormals();g.computeBoundingSphere();return g;}
+function addAccumMesh(group,acc,material,name){const g=geometryFromAccum(acc);if(!g)return;const m=new THREE.Mesh(g,material);m.name=name;m.castShadow=true;m.receiveShadow=true;group.add(m);}
+
+function addBarriers(road,frames,accConcrete,accSteel,postSpacing){
+  const points=road.points,bridge=road.bridge||road.offset>1.0;if(road.tunnel)return;
+  for(const side of [-1,1]){
+    const edge=frames.map(f=>({x:f.x+f.nx*side*1.0,z:f.z+f.nz*side*1.0,y:0}));
+    if(bridge){
+      // Concrete parapet wall
+      const base=accConcrete.positions.length/3;
+      for(let i=0;i<frames.length;i++){const e=edge[i],p=points[i];addVertex(accConcrete,{x:e.x,y:p.y+0.04,z:e.z},0,p.s/20);addVertex(accConcrete,{x:e.x,y:p.y+1.08,z:e.z},1,p.s/20);}
+      for(let i=0;i<frames.length-1;i++){const a=base+i*2,b=a+1,c=a+2,d=a+3;accConcrete.indices.push(a,c,b,b,c,d);}
+      // Safety handrails above the parapet
+      for(const h of [1.35,1.62]){
+        const b=accSteel.positions.length/3;
+        for(let i=0;i<frames.length;i++){const e=edge[i],p=points[i],w=0.065;addVertex(accSteel,{x:e.x-w,y:p.y+h,z:e.z},0,p.s/25);addVertex(accSteel,{x:e.x+w,y:p.y+h,z:e.z},1,p.s/25);}
+        for(let i=0;i<frames.length-1;i++){const l=b+i*2,r=l+1,ln=l+2,rn=l+3;accSteel.indices.push(l,ln,r,r,ln,rn);}
+      }
+      for(let s=8;s<road.length;s+=Math.max(7,postSpacing)){const p=interpRoadPoint(points,s),f=interpFrame(points,frames,s),ratio=side*1.0;pushBox(accSteel,f.x+f.nx*ratio,p.y+1.35,f.z+f.nz*ratio,f.tx,f.tz,0.18,0.18,0.62);}
+    }else{
+      // Ground-level steel guard rail, lighter and lower than a viaduct parapet.
+      for(const h of [0.72,0.92]){
+        const b=accSteel.positions.length/3;
+        for(let i=0;i<frames.length;i++){const e=edge[i],p=points[i],w=0.055;addVertex(accSteel,{x:e.x-w,y:p.y+h,z:e.z},0,p.s/25);addVertex(accSteel,{x:e.x+w,y:p.y+h,z:e.z},1,p.s/25);}
+        for(let i=0;i<frames.length-1;i++){const l=b+i*2,r=l+1,ln=l+2,rn=l+3;accSteel.indices.push(l,ln,r,r,ln,rn);}
+      }
+      for(let s=4;s<road.length;s+=postSpacing){const p=interpRoadPoint(points,s),f=interpFrame(points,frames,s);pushBox(accSteel,f.x+f.nx*side*1.0,p.y+0.48,f.z+f.nz*side*1.0,f.tx,f.tz,0.16,0.16,0.9);}
+    }
+  }
+}
+
+function buildScene(roads,projection,quality){
+  const scene=new THREE.Scene();scene.name='Osaka Expressway Network';const root=new THREE.Group();root.name='Osaka_Expressway_Local_ENU_Origin';scene.add(root);
+  const asphalt=new THREE.MeshStandardMaterial({map:makeNoiseTexture([48,53,57],25,13),roughness:0.97,metalness:0.0,side:THREE.DoubleSide});
+  const concrete=new THREE.MeshStandardMaterial({map:makeNoiseTexture([130,134,132],18,25),roughness:0.92,metalness:0.02,side:THREE.DoubleSide});
+  const steel=new THREE.MeshStandardMaterial({color:0x68737b,roughness:0.58,metalness:0.62,side:THREE.DoubleSide});
+  const paint=new THREE.MeshStandardMaterial({color:0xe8e8df,roughness:0.86,metalness:0,side:THREE.DoubleSide});
+  const acc={asphalt:createAccum(),concrete:createAccum(),steel:createAccum(),paint:createAccum(),piers:createAccum()};
+  let pierCount=0,roadCount=0;
+  const postSpacing=quality==='compact'?13:9,pierSpacing=quality==='compact'?58:40;
+  const roadSpatial=new Map();const cell=12;
+  for(const r of roads)for(let i=0;i<r.points.length;i++){
+    const p=r.points[i],key=Math.floor(p.x/cell)+','+Math.floor(p.z/cell);if(!roadSpatial.has(key))roadSpatial.set(key,[]);roadSpatial.get(key).push({x:p.x,z:p.z,y:p.y,width:r.width});
+  }
+  for(let ri=0;ri<roads.length;ri++){
+    const sourceRoad=roads[ri];
+    const compactPoints=quality==='compact'?sourceRoad.points.filter((p,i)=>i===0||i===sourceRoad.points.length-1||i%2===0):sourceRoad.points;
+    const road=compactPoints===sourceRoad.points?sourceRoad:{...sourceRoad,points:compactPoints};
+    const frames=addRoadTop(acc.asphalt,road);roadCount++;
+    if(road.bridge||road.offset>1.0)addDeckSlab(acc.concrete,road,frames);
+    addLaneMarkings(acc.paint,road,frames);
+    addBarriers(road,frames,acc.concrete,acc.steel,postSpacing);
+    if((road.bridge||road.offset>1.0)&&!road.tunnel){
+      for(let s=pierSpacing;s<road.length-pierSpacing*0.35;s+=pierSpacing){
+        const p=interpRoadPoint(road.points,s),f=interpFrame(road.points,frames,s),ground=interpGround(road.points,s);
+        if(p.y-ground<2.7)continue;
+        let collision=false;
+        for(let dx=-1;dx<=1&&!collision;dx++)for(let dz=-1;dz<=1&&!collision;dz++){
+          const list=roadSpatial.get(Math.floor((p.x+dx*cell)/cell)+','+Math.floor((p.z+dz*cell)/cell))||[];
+          for(const q of list){if(Math.hypot(q.x-p.x,q.z-p.z)<Math.max(3,q.width/2)&&q.y>ground+0.8&&q.y<p.y-1.3){collision=true;break;}}
+        }
+        if(collision)continue;
+        if(pushPier(acc.piers,p.x,p.z,ground,p.y,f.tx,f.tz)){
+          const capY=p.y-0.65;pushBox(acc.piers,p.x,capY,p.z,f.tx,f.tz,2.2,Math.max(6.5,road.width+2.0),0.75);pierCount++;
+        }
+      }
+    }
+    if(ri%250===0)status(`メッシュ生成中 ${ri.toLocaleString()} / ${roads.length.toLocaleString()} ways`,65+25*ri/roads.length);
+  }
+  addAccumMesh(root,acc.asphalt,asphalt,'Road_Surface_Asphalt');
+  addAccumMesh(root,acc.concrete,concrete,'Bridge_Deck_Parapets');
+  addAccumMesh(root,acc.steel,steel,'Guardrails_And_Fences');
+  addAccumMesh(root,acc.paint,paint,'Lane_Markings');
+  addAccumMesh(root,acc.piers,concrete,'Bridge_Piers_And_Caps');
+  root.userData.originLongitude=projection.lon0;root.userData.originLatitude=projection.lat0;root.userData.axes='GLTF Y-up; local X=east, Y=up, Z=south';
+  return {scene,pierCount,roadCount};
+}
+function interpGround(points,s){let lo=0,hi=points.length-1;while(lo<hi){const mid=(lo+hi)>>1;if(points[mid].s<s)lo=mid+1;else hi=mid;}const i=Math.max(1,lo),a=points[i-1],b=points[i],t=Math.max(0,Math.min(1,(s-a.s)/(b.s-a.s||1)));return a.ground+(b.ground-a.ground)*t;}
+function exportGlb(scene){return new Promise((resolve,reject)=>{const exporter=new GLTFExporter();exporter.parse(scene,result=>resolve(new Blob([result],{type:'model/gltf-binary'})),error=>reject(error),{binary:true,onlyVisible:true,trs:false});});}
+
+async function runBuild(){
+  if(isRunning)return;isRunning=true;$('build').disabled=true;$('download').disabled=true;$('manifest').disabled=true;generatedBlob=null;generatedManifest=null;$('log').textContent='';
+  try{
+    status('OpenStreetMap から道路線形を取得中…',2);
+    const osm=await fetchOverpass();const projection=localProjection(osm.ways);
+    const prepared=makeRoads(osm.ways,projection,18);const roads=prepared.roads;
+    metric('mWays',roads.length.toLocaleString());metric('mKm',(prepared.totalLength/1000).toFixed(1)+' km');
+    log(`対象道路延長: ${(prepared.totalLength/1000).toFixed(1)} km`);
+    log(`width明示: ${prepared.explicitWidth}/${roads.length} ways、lanes明示: ${prepared.explicitLanes}/${roads.length} ways`);
+    const allPoints=[];for(const r of roads)for(const p of r.points)allPoints.push(p);
+    metric('mElev',allPoints.length.toLocaleString());
+    status(`国土地理院 DEM で標高を取得中… (${allPoints.length.toLocaleString()}点)`,12);
+    let completed=0,missingDem=0;const batchSize=180;
+    for(let i=0;i<allPoints.length;i+=batchSize){
+      const batch=allPoints.slice(i,i+batchSize);const vals=await Promise.all(batch.map(p=>elevationAt(p.lon,p.lat)));
+      for(let j=0;j<batch.length;j++){const v=vals[j];if(v===null){missingDem++;batch[j].ground=0;batch[j].y=0;}else{batch[j].ground=v;batch[j].y=v;}}
+      completed+=batch.length;if(completed%900<batch.length||completed===allPoints.length){status(`国土地理院 DEM 取得中 ${completed.toLocaleString()} / ${allPoints.length.toLocaleString()}`,12+48*completed/allPoints.length);}
+    }
+    const noData=missingDem;tileCache.clear();
+    // Smooth small DEM sampling noise but retain the actual longitudinal terrain profile.
+    for(const r of roads){const sm=smoothValues(r.points.map(p=>p.ground));for(let i=0;i<r.points.length;i++){r.points[i].ground=sm[i];r.points[i].y=sm[i]+r.offset;}}
+    const linked=reconcileJunctions(roads);
+    log(`接続ノードの高さを整合: ${linked.toLocaleString()} nodes`);
+    if(noData)log(`注意: DEM欠測点 ${noData.toLocaleString()}。海域・欠測地域を含む可能性があります。`);
+    status('道路面・車線・高架床版・防護柵・橋脚を生成中…',63);
+    let built=buildScene(roads,projection,'high');
+    metric('mPiers',built.pierCount.toLocaleString());
+    status('GLB に書き出し中…',92);
+    let blob=await exportGlb(built.scene);
+    if(blob.size>MAX_BYTES){
+      log(`高精細版が100MB超 (${(blob.size/1048576).toFixed(1)}MB)。軽量設定で再生成します。`);
+      built.scene.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material){if(Array.isArray(o.material))o.material.forEach(m=>m.dispose());else o.material.dispose();}});
+      built=buildScene(roads,projection,'compact');metric('mPiers',built.pierCount.toLocaleString());blob=await exportGlb(built.scene);
+    }
+    if(blob.size>MAX_BYTES)throw new Error(`軽量化後も100MBを超えました (${(blob.size/1048576).toFixed(1)}MB)。この状態ではダウンロードを許可しません。`);
+    generatedBlob=blob;generatedName='Osaka_Expressway_Network.glb';
+    generatedManifest={
+      title:'Osaka Prefecture Expressway Network',createdAt:new Date().toISOString(),
+      source:{osm:'© OpenStreetMap contributors, ODbL',osmTimestamp:osm.timestamp,overpassEndpoint:osm.endpoint,gsi:'GSI DEM tiles (DEM5A/5B/5C/10B)'},
+      coverage:'Osaka Prefecture administrative area',highwayTags:['motorway','motorway_link'],
+      origin:{longitude:projection.lon0,latitude:projection.lat0,altitude:0},
+      glb:{file:generatedName,sizeBytes:blob.size,sizeMiB:Number((blob.size/1048576).toFixed(2)),coordinateSystem:'local GLTF Y-up; X=east, Y=up, Z=south'},
+      statistics:{ways:roads.length,totalLengthMeters:Math.round(prepared.totalLength),elevationSamples:allPoints.length,bridgePiers:built.pierCount,explicitWidthWays:prepared.explicitWidth,explicitLaneWays:prepared.explicitLanes,demMissingSamples:noData},
+      assumptions:{sampleSpacingMeters:18,defaultLaneWidthMeters:3.5,defaultWidthFormula:'lanes * 3.5m + 2.4m shoulders',bridgeDeckOffsetMeters:'6.2m for bridge/layer 1; +5m per additional layer',pierSpacingMeters:'40m high / 58m compact; inferred, not surveyed',junctionAdjustment:'shared OSM endpoint node median height with smooth 85m taper',hardLimitBytes:MAX_BYTES},
+      limitations:['OSM does not provide surveyed deck elevations and pier positions for every expressway segment.','Bridge deck clearances and inferred pier intervals are approximations when source tags are absent.','No survey-grade guarantee against all 3D overlaps; use as a simulation/model base, not engineering design data.']
+    };
+    $('download').disabled=false;$('manifest').disabled=false;
+    status(`完成：${(blob.size/1048576).toFixed(2)} MB / 100 MB`,100);
+    log(`生成完了: ${roads.length.toLocaleString()} ways / ${(prepared.totalLength/1000).toFixed(1)} km / 橋脚 ${built.pierCount.toLocaleString()}基`);
+    log(`GLBサイズ: ${(blob.size/1048576).toFixed(2)} MB`);
+    log('「GLBをダウンロード」を押してください。配置原点などは JSON に保存できます。');
+  }catch(e){console.error(e);status('生成に失敗しました',0);log('ERROR: '+String(e.stack||e));alert('生成に失敗しました。ログを確認してください。\n'+String(e.message||e));}
+  finally{isRunning=false;$('build').disabled=false;}
+}
+
+$('build').addEventListener('click',runBuild);
+$('download').addEventListener('click',()=>{if(generatedBlob)downloadBlob(generatedBlob,generatedName);});
+$('manifest').addEventListener('click',()=>{if(generatedManifest){const blob=new Blob([JSON.stringify(generatedManifest,null,2)],{type:'application/json'});downloadBlob(blob,'Osaka_Expressway_manifest.json');}});
+</script>
+</body>
+</html>
