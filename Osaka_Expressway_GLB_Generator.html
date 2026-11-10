@@ -16,6 +16,14 @@ button{appearance:none;border:0;border-radius:10px;background:var(--accent);colo
 a{color:#85c9ff}
 @media(max-width:600px){main{padding:16px 12px 32px}h1{font-size:21px}.grid{grid-template-columns:1fr 1fr}}
 </style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
 </head>
 <body>
 <main>
@@ -52,9 +60,17 @@ a{color:#85c9ff}
   <p class="small">データ出典：© OpenStreetMap contributors（ODbL）／国土地理院 標高タイル。生成した GLB はローカル座標系です。配置情報 JSON に原点経緯度・使用データ・推定条件を記録します。</p>
 </main>
 
+<script>
+if (location.protocol === 'file:') {
+  const msg = 'このHTMLをファイルから直接開く方法では実行できません。HTTPSのWebページとして公開して開いてください（GitHub Pages等）。';
+  document.getElementById('status').textContent = 'HTTPSでの公開が必要です';
+  document.getElementById('log').textContent = msg;
+  document.getElementById('build').disabled = true;
+}
+</script>
 <script type="module">
-import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js';
-import { GLTFExporter } from 'https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/exporters/GLTFExporter.js';
+import * as THREE from 'three';
+import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 
 const $ = id => document.getElementById(id);
 const MAX_BYTES = 100 * 1024 * 1024;
