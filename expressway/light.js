@@ -1,39 +1,76 @@
 'use strict';
 (async()=>{
   const C=window.Cesium,g=window.geofs,viewer=g&&g.api&&g.api.viewer,scene=viewer&&viewer.scene;
-  if(!C||!g||!viewer||!scene||!C.PointPrimitiveCollection||!C.PolylineCollection||!C.Matrix4||!C.Transforms){
-    console.error('[OSAKA road lights v4] Cesium / GeoFS API不足');return;
+  if(!C||!g||!viewer||!scene||!C.PointPrimitiveCollection||!C.BillboardCollection||!C.PolylineCollection){
+    console.error('[OSAKA expressway lights v2] Cesium / GeoFS API不足');return;
   }
-  const COLLISION_URL='https://huggingface.co/supermanone-boop/hankyu/resolve/main/Osaka_Expressways_RoadCollision_v7.bin.gz';
-  const ROAD_URL='https://raw.githubusercontent.com/supermanone-boop/model/main/itamishuhenexport.geojson';
+
+  const ROOT='https://raw.githubusercontent.com/supermanone-boop/model/main/';
+  const ROAD_URL=ROOT+'itamishuhenexport.geojson';
+  const TRAFFIC_URL=ROOT+'osaka_road_routes_beta.json.gz';
+  const COLLISION_URLS=[
+    'https://huggingface.co/supermanone-boop/hankyu/resolve/main/Osaka_Expressways_RoadCollision_v7.bin.gz',
+    ROOT+'Osaka_Expressways_RoadCollision_v7.bin.gz'
+  ];
   const CFG={
-    LAMP_SPACING_M:50,LAMP_POLE_HEIGHT_M:14,LAMP_EDGE_OFFSET_M:1.25,LAMP_ARM_M:2.5,
-    EDGE_MIN_M:4.5,EDGE_MAX_M:9.8,VERTEX_SNAP_M:.02,HEIGHT_GRID_M:40,
-    LAMP_BUILD_RADIUS_M:8500,LAMP_VISIBLE_RADIUS_M:7000,LAMP_HIDE_RADIUS_M:9000,
-    TILE_SCAN_MS:1800,LAMP_VISIBILITY_MS:1200,BUILD_YIELD_TRIANGLES:700,
-    CAR_SPACING_M:80,CAR_SPEED_MPS:60/3.6,CAR_VISIBLE_M:4800,CAR_UPDATE_MS:120,
-    CAR_HEIGHT_REFRESH_MS:650,CAR_LIGHT_HEIGHT_M:1.05,CAR_FRONT_M:2.0,CAR_REAR_M:2.0,
-    CAR_NEAR_PX:1.45,CAR_FAR_PX:.95,MAX_CARS:9000,
-    NIGHT_START_DEG:1,NIGHT_FULL_DEG:-5,NIGHT_UPDATE_MS:2500,
-    ROUTE_MIN_LENGTH_M:35,INCLUDE_TOLL_TRUNK:true
+    LAMP_SPACING_M:50,
+    LAMP_POLE_HEIGHT_M:14,
+    LAMP_SIDE_MARGIN_M:1.6,
+    LAMP_ARM_M:4.5,
+    LAMP_BUILD_RADIUS_M:8500,
+    LAMP_VISIBLE_RADIUS_M:6800,
+    LAMP_SCAN_MS:1800,
+    TILE_SCAN_MS:2500,
+    TILE_CELL_M:32,
+    TILE_YIELD_TRIANGLES:12000,
+    LAMP_MAX_COUNT:2400,
+    LAMP_GLOW_PX:12,
+    LAMP_CORE_PX:2.2,
+    CAR_VISIBLE_RADIUS_M:7500,
+    CAR_SPACING_M:72,
+    CAR_MAX_COUNT:14000,
+    CAR_UPDATE_MS:120,
+    CAR_HEIGHT_REFRESH_MS:800,
+    CAR_LIGHT_HEIGHT_M:0.95,
+    CAR_FRONT_M:2.0,
+    CAR_REAR_M:2.0,
+    CAR_BODY_PX_NEAR:1.25,
+    CAR_LIGHT_PX_NEAR:1.65,
+    CAR_LIGHT_PX_FAR:0.9,
+    AVG_FLOW_SPEED_KMH:72,
+    LANES_PER_DIRECTION:2,
+    MIN_SPEED_MPS:15.0,
+    MAX_SPEED_MPS:22.5,
+    SAFE_GAP_M:13,
+    HEADWAY_S:2.0,
+    ACCEL_MPS2:0.34,
+    BRAKE_MPS2:0.72,
+    NIGHT_START_DEG:1,
+    NIGHT_FULL_DEG:-5,
+    NIGHT_UPDATE_MS:2500,
+    MODEL_FREE:true
   };
-  const RAD=Math.PI/180,R=6378137,SY=R*RAD,LAT0=34.6,SX=R*RAD*Math.cos(LAT0*RAD),CELL_DEG=.01;
+  const RAD=Math.PI/180,R=6378137,LAT0=34.6,SY=R*RAD,SX=R*RAD*Math.cos(LAT0*RAD),GRID_DEG=.01;
   const clamp=(v,a,b)=>Math.max(a,Math.min(b,v));
   const finite=Number.isFinite;
   const sleep=ms=>new Promise(r=>setTimeout(r,ms));
-  const prev=window.__osakaPointLights;
+  const prev=window.__osakaExpresswayNightTraffic;
   if(prev&&typeof prev.stop==='function')try{prev.stop();}catch(_){}
-  const oldTraffic=window.__osakaTraffic;
-  if(oldTraffic&&oldTraffic.active&&typeof oldTraffic.stop==='function')try{oldTraffic.stop();}catch(_){}
+  if(window.__osakaPointLights&&typeof window.__osakaPointLights.stop==='function')try{window.__osakaPointLights.stop();}catch(_){}
+  if(window.__osakaTraffic&&window.__osakaTraffic.active&&typeof window.__osakaTraffic.stop==='function')try{window.__osakaTraffic.stop();}catch(_){}
 
-  const state={active:true,version:'roadmesh-point-lights-v4',buffer:null,tiles:[],tileCells:new Map(),buildQueue:[],building:false,
-    lamps:[],cars:[],routes:[],points:null,poles:null,callback:null,nightFactor:0,sunElevation:90,
-    lastNight:0,lastTileScan:0,lastLampVisibility:0,lastCarUpdate:0,lastTick:performance.now(),stats:{tiles:0,triangles:0,tilesBuilt:0,edgeSegments:0,streetLamps:0,ways:0,cars:0,roadHeightMisses:0}};
-  window.__osakaPointLights=state;
-  state.points=scene.primitives.add(new C.PointPrimitiveCollection());
-  state.poles=scene.primitives.add(new C.PolylineCollection());
-  const poleMaterial=C.Material.fromType('Color',{color:new C.Color(.24,.25,.27,.96)});
-  const warm=new C.Color(1,.82,.58,1),white=new C.Color(1,.96,.88,1),red=new C.Color(1,.055,.035,1);
+  const state={active:true,version:'2.0',buffer:null,tiles:[],tileCells:new Map(),tileQueue:[],tilePump:false,
+    lampRoutes:[],lamps:[],lampDedup:new Map(),traffic:null,routes:[],zoneMap:new Map(),groups:[],cars:[],
+    poleCollection:null,lampPoints:null,lampGlows:null,carPoints:null,callback:null,
+    nightFactor:0,sunElevation:90,lastNight:0,lastTileScan:0,lastLampScan:0,lastCarUpdate:0,lastVisibility:0,
+    scanPromise:null,stats:{tiles:0,triangles:0,tilesBuilt:0,lamps:0,lampHeightMisses:0,roads:0,cars:0,visibleCars:0}};
+  window.__osakaExpresswayNightTraffic=state;
+
+  const warm=new C.Color(1,.78,.43,1);
+  const white=new C.Color(1,.96,.87,1);
+  const red=new C.Color(1,.055,.035,1);
+  const bodyColor=new C.Color(.29,.29,.28,.88);
+  const poleColor=new C.Color(.21,.21,.20,.92);
 
   function focus(){
     const a=g.aircraft&&g.aircraft.instance,p=a&&a.llaLocation;
@@ -43,8 +80,8 @@
     return null;
   }
   function distanceXY(lat1,lon1,lat2,lon2){
-    const latMid=(lat1+lat2)*.5*RAD;
-    return Math.hypot((lon2-lon1)*111319.49*Math.cos(latMid),(lat2-lat1)*110574);
+    const lm=(lat1+lat2)*.5*RAD;
+    return Math.hypot((lon2-lon1)*111319.49*Math.cos(lm),(lat2-lat1)*110574);
   }
   function sunElevation(lat,lon,date){
     const y=date.getUTCFullYear(),start=Date.UTC(y,0,1),day=Math.floor((Date.UTC(y,date.getUTCMonth(),date.getUTCDate())-start)/86400000)+1;
@@ -61,267 +98,420 @@
     state.lastNight=now;state.sunElevation=sunElevation(f.lat,f.lon,new Date());
     state.nightFactor=clamp((CFG.NIGHT_START_DEG-state.sunElevation)/(CFG.NIGHT_START_DEG-CFG.NIGHT_FULL_DEG),0,1);
   }
-  function addTileToGeoGrid(tile){
-    const dLat=tile.radius/110574+.00015,dLon=tile.radius/(111319.49*Math.max(.2,Math.cos(tile.lat*RAD)))+.00015;
-    const x0=Math.floor((tile.lon-dLon)/CELL_DEG),x1=Math.floor((tile.lon+dLon)/CELL_DEG);
-    const y0=Math.floor((tile.lat-dLat)/CELL_DEG),y1=Math.floor((tile.lat+dLat)/CELL_DEG);
+  function addTileToGrid(tile){
+    const dLat=tile.radius/110574+.00012,dLon=tile.radius/(111319.49*Math.max(.2,Math.cos(tile.lat*RAD)))+.00012;
+    const x0=Math.floor((tile.lon-dLon)/GRID_DEG),x1=Math.floor((tile.lon+dLon)/GRID_DEG);
+    const y0=Math.floor((tile.lat-dLat)/GRID_DEG),y1=Math.floor((tile.lat+dLat)/GRID_DEG);
     for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
       const k=x+','+y;let a=state.tileCells.get(k);if(!a)state.tileCells.set(k,a=[]);a.push(tile);
     }
   }
   async function loadCollision(){
     if(typeof DecompressionStream==='undefined')throw Error('gzip DecompressionStream 非対応');
-    const r=await fetch(COLLISION_URL,{cache:'no-store'});if(!r.ok)throw Error('RoadCollision HTTP '+r.status);
-    if(!r.body)throw Error('ReadableStream unavailable');
-    const buffer=await new Response(r.body.pipeThrough(new DecompressionStream('gzip'))).arrayBuffer();
-    const v=new DataView(buffer);
-    if(v.byteLength<12||v.getUint8(0)!==79||v.getUint8(1)!==83||v.getUint8(2)!==67||v.getUint8(3)!==82)throw Error('OSCRヘッダーが違います');
+    let response=null,lastError=null;
+    for(const url of COLLISION_URLS){
+      try{const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);response=r;break;}
+      catch(e){lastError=e;}
+    }
+    if(!response)throw Error('RoadCollision取得失敗: '+(lastError&&lastError.message||'unknown'));
+    const stream=response.body?response.body.pipeThrough(new DecompressionStream('gzip')):new Blob([await response.arrayBuffer()]).stream().pipeThrough(new DecompressionStream('gzip'));
+    const buffer=await new Response(stream).arrayBuffer(),v=new DataView(buffer);
+    if(v.byteLength<12||v.getUint8(0)!==79||v.getUint8(1)!==83||v.getUint8(2)!==67||v.getUint8(3)!==82)throw Error('OSCRヘッダー不正');
     const version=v.getUint16(4,true),count=v.getUint32(8,true);
-    if(version!==1||count<1||count>2000)throw Error('OSCR version/tile count不正: '+version+'/'+count);
+    if(version!==1||count<1||count>2000)throw Error('OSCR version/tile count不正 '+version+'/'+count);
     let o=12,total=0;
     for(let i=0;i<count;i++){
       if(o+32>v.byteLength)throw Error('tile header truncated '+i);
       const ix=v.getInt32(o,true),iy=v.getInt32(o+4,true),lon=v.getFloat64(o+8,true),lat=v.getFloat64(o+16,true);
       const radius=v.getFloat32(o+24,true),triangleCount=v.getUint32(o+28,true);o+=32;
-      const bytes=triangleCount*36;
-      if(!finite(lon)||!finite(lat)||!finite(radius)||!triangleCount||o+bytes>v.byteLength)throw Error('tile data invalid '+i);
-      const tile={ix,iy,lon,lat,radius,triangleCount,dataOffset:o,built:false,queued:false,heightGrid:null,lamps:[],enu:null};
-      state.tiles.push(tile);addTileToGeoGrid(tile);total+=triangleCount;o+=bytes;
+      if(!finite(lon)||!finite(lat)||!finite(radius)||!triangleCount||o+triangleCount*36>v.byteLength)throw Error('tile data invalid '+i);
+      const tile={ix,iy,lon,lat,radius,triangleCount,dataOffset:o,values:null,heightGrid:null,built:false,queued:false};
+      state.tiles.push(tile);addTileToGrid(tile);total+=triangleCount;o+=triangleCount*36;
     }
     if(o!==v.byteLength)throw Error('OSCR末尾サイズ不一致 '+(v.byteLength-o));
     state.buffer=buffer;state.stats.tiles=count;state.stats.triangles=total;
-    console.log('[OSAKA road lights v4] RoadCollision:',count,'tiles /',total.toLocaleString(),'triangles');
+    console.log('[OSAKA expressway lights v2] 高度タイル:',count,'/ 三角形:',total.toLocaleString());
   }
-  function keyCell(x,y){return Math.floor(x/CFG.HEIGHT_GRID_M)+','+Math.floor(y/CFG.HEIGHT_GRID_M);}
-  function addHeightTriangle(grid,idx,ax,ay,bx,by,cx,cy){
-    const minX=Math.floor(Math.min(ax,bx,cx)/CFG.HEIGHT_GRID_M),maxX=Math.floor(Math.max(ax,bx,cx)/CFG.HEIGHT_GRID_M);
-    const minY=Math.floor(Math.min(ay,by,cy)/CFG.HEIGHT_GRID_M),maxY=Math.floor(Math.max(ay,by,cy)/CFG.HEIGHT_GRID_M);
+  function addHeightTri(grid,index,a,b,c){
+    const minX=Math.floor(Math.min(a[0],b[0],c[0])/CFG.TILE_CELL_M),maxX=Math.floor(Math.max(a[0],b[0],c[0])/CFG.TILE_CELL_M);
+    const minY=Math.floor(Math.min(a[1],b[1],c[1])/CFG.TILE_CELL_M),maxY=Math.floor(Math.max(a[1],b[1],c[1])/CFG.TILE_CELL_M);
     for(let x=minX;x<=maxX;x++)for(let y=minY;y<=maxY;y++){
-      const k=x+','+y;let a=grid.get(k);if(!a)grid.set(k,a=[]);a.push(idx);
+      const k=x+','+y;let list=grid.get(k);if(!list)grid.set(k,list=[]);list.push(index);
     }
   }
-  const snapKey=(x,y,z)=>Math.round(x/CFG.VERTEX_SNAP_M)+','+Math.round(y/CFG.VERTEX_SNAP_M)+','+Math.round(z/CFG.VERTEX_SNAP_M);
-  function edgeKey(a,b){return a<b?a+'|'+b:b+'|'+a;}
-  function tracePath(start,first,edges,graph,visited){
-    const path=[];let node=start,eid=first;
-    while(!visited[eid]){
-      visited[eid]=1;const e=edges[eid],next=e.ak===node?e.bk:e.ak;
-      path.push({edge:e,from:node});
-      const adjacent=graph.get(next)||[];if(adjacent.length!==2)break;
-      const nextEdge=adjacent[0]===eid?adjacent[1]:adjacent[0];if(visited[nextEdge])break;
-      node=next;eid=nextEdge;
+  async function buildHeightTile(tile){
+    const vals=new Float32Array(state.buffer,tile.dataOffset,tile.triangleCount*9),grid=new Map();
+    for(let i=0;i<tile.triangleCount;i++){
+      const j=i*9,a=[vals[j],vals[j+1],vals[j+2]],b=[vals[j+3],vals[j+4],vals[j+5]],c=[vals[j+6],vals[j+7],vals[j+8]];
+      if(finite(a[0])&&finite(a[1])&&finite(a[2])&&finite(b[0])&&finite(b[1])&&finite(b[2])&&finite(c[0])&&finite(c[1])&&finite(c[2]))addHeightTri(grid,i,a,b,c);
+      if(i>0&&i%CFG.TILE_YIELD_TRIANGLES===0){await sleep(0);if(!state.active)return;}
     }
-    return path;
+    tile.values=vals;tile.heightGrid=grid;tile.built=true;tile.queued=false;state.stats.tilesBuilt++;
   }
-  function localWorld(tile,x,y,z){
-    const p=C.Matrix4.multiplyByPoint(tile.enu,new C.Cartesian3(x,y,z),new C.Cartesian3());return p;
-  }
-  function addLamp(tile,edge,fromKey,t){
-    let ax,ay,az,bx,by,bz;
-    if(fromKey===edge.ak){[ax,ay,az]=edge.a;[bx,by,bz]=edge.b;}
-    else{[ax,ay,az]=edge.b;[bx,by,bz]=edge.a;}
-    const mx=ax+(bx-ax)*t,my=ay+(by-ay)*t,mz=az+(bz-az)*t;
-    let ix=edge.inside[0]-mx,iy=edge.inside[1]-my,il=Math.hypot(ix,iy);if(il<.001)return;
-    ix/=il;iy/=il;
-    const baseX=mx-ix*CFG.LAMP_EDGE_OFFSET_M,baseY=my-iy*CFG.LAMP_EDGE_OFFSET_M;
-    const topZ=mz+CFG.LAMP_POLE_HEIGHT_M,headX=baseX+ix*CFG.LAMP_ARM_M,headY=baseY+iy*CFG.LAMP_ARM_M;
-    const wx=tile.lon*SX+baseX,wy=tile.lat*SY+baseY;
-    const dedupe=Math.round(wx/3)+','+Math.round(wy/3)+','+Math.round(mz/4);
-    if(state.lampDedup.has(dedupe))return;state.lampDedup.add(dedupe);
-    const base=localWorld(tile,baseX,baseY,mz+.12),top=localWorld(tile,baseX,baseY,topZ),head=localWorld(tile,headX,headY,topZ);
-    const pole=state.poles.add({positions:[base,top,head],width:1.0,material:poleMaterial,show:false});
-    const point=state.points.add({position:head,color:warm,pixelSize:1.8,show:false,outlineWidth:0,disableDepthTestDistance:0});
-    const lamp={x:wx,y:wy,pole,point,tile};tile.lamps.push(lamp);state.lamps.push(lamp);
-  }
-  function samplePath(path){
-    if(!path.length)return;let total=0;const lens=[];
-    for(const p of path){const l=p.edge.len;lens.push(l);total+=l;}
-    if(total<25)return;
-    for(let d=25;d<total;d+=CFG.LAMP_SPACING_M){
-      let acc=0;
-      for(let i=0;i<path.length;i++){
-        const e=path[i].edge,l=lens[i];
-        if(d<=acc+l||i===path.length-1){addLamp(path[i].edge.tile,e,path[i].from,clamp((d-acc)/l,0,1));break;}
-        acc+=l;
-      }
-    }
-  }
-  async function buildTile(tile){
-    tile.enu=C.Transforms.eastNorthUpToFixedFrame(C.Cartesian3.fromDegrees(tile.lon,tile.lat,0));
-    const vals=new Float32Array(state.buffer,tile.dataOffset,tile.triangleCount*9),edgeMap=new Map(),heightGrid=new Map();
-    tile.values=vals;
-    for(let t=0;t<tile.triangleCount;t++){
-      const j=t*9,ax=vals[j],ay=vals[j+1],az=vals[j+2],bx=vals[j+3],by=vals[j+4],bz=vals[j+5],cx=vals[j+6],cy=vals[j+7],cz=vals[j+8];
-      if(!finite(ax)||!finite(ay)||!finite(az)||!finite(bx)||!finite(by)||!finite(bz)||!finite(cx)||!finite(cy)||!finite(cz))continue;
-      addHeightTriangle(heightGrid,t,ax,ay,bx,by,cx,cy);
-      const A=snapKey(ax,ay,az),B=snapKey(bx,by,bz),D=snapKey(cx,cy,cz);
-      const add=(ka,kb,a,b,inside)=>{
-        const k=edgeKey(ka,kb);let e=edgeMap.get(k);
-        if(e)e.count++;
-        else edgeMap.set(k,{ak:ka,bk:kb,a,b,inside,count:1,len:Math.hypot(b[0]-a[0],b[1]-a[1]),tile});
-      };
-      add(A,B,[ax,ay,az],[bx,by,bz],[cx,cy,cz]);
-      add(B,D,[bx,by,bz],[cx,cy,cz],[ax,ay,az]);
-      add(D,A,[cx,cy,cz],[ax,ay,az],[bx,by,bz]);
-      if(t%CFG.BUILD_YIELD_TRIANGLES===0&&t>0)await sleep(0);
-      if(!state.active)return;
-    }
-    const edges=[];
-    for(const e of edgeMap.values())if(e.count===1&&e.len>=CFG.EDGE_MIN_M&&e.len<=CFG.EDGE_MAX_M)edges.push(e);
-    const graph=new Map();
-    for(let i=0;i<edges.length;i++){
-      const e=edges[i];let a=graph.get(e.ak);if(!a)graph.set(e.ak,a=[]);a.push(i);
-      let b=graph.get(e.bk);if(!b)graph.set(e.bk,b=[]);b.push(i);
-    }
-    const visited=new Uint8Array(edges.length);
-    for(const [node,ids] of graph){if(ids.length===2)continue;for(const id of ids)if(!visited[id])samplePath(tracePath(node,id,edges,graph,visited));}
-    for(let i=0;i<edges.length;i++)if(!visited[i])samplePath(tracePath(edges[i].ak,i,edges,graph,visited));
-    tile.heightGrid=heightGrid;tile.built=true;tile.queued=false;tile.edgeSegments=edges.length;
-    state.stats.tilesBuilt++;state.stats.edgeSegments+=edges.length;state.stats.streetLamps=state.lamps.length;
-    console.log('[OSAKA road lights v4] tile built',tile.ix,tile.iy,'tri',tile.triangleCount,'edge',edges.length,'lamps',tile.lamps.length);
-  }
-  async function pumpBuild(){
-    if(state.building||!state.active)return;state.building=true;
-    while(state.active&&state.buildQueue.length){
-      const tile=state.buildQueue.shift();
-      try{await buildTile(tile);}catch(e){tile.queued=false;console.warn('[OSAKA road lights v4] tile build failed',tile.ix,tile.iy,e);}
+  async function pumpTileQueue(){
+    if(state.tilePump||!state.active)return;state.tilePump=true;
+    while(state.active&&state.tileQueue.length){
+      const tile=state.tileQueue.shift();
+      try{await buildHeightTile(tile);}catch(e){tile.queued=false;console.warn('[OSAKA expressway lights v2] 高度タイル処理失敗',tile.ix,tile.iy,e);}
       await sleep(0);
     }
-    state.building=false;
+    state.tilePump=false;
   }
   function queueNearbyTiles(f){
     for(const tile of state.tiles){
       if(tile.built||tile.queued)continue;
-      const d=distanceXY(f.lat,f.lon,tile.lat,tile.lon);
-      if(d<=CFG.LAMP_BUILD_RADIUS_M+tile.radius){tile.queued=true;state.buildQueue.push(tile);}
+      if(distanceXY(f.lat,f.lon,tile.lat,tile.lon)<=CFG.LAMP_BUILD_RADIUS_M+tile.radius){tile.queued=true;state.tileQueue.push(tile);}
     }
-    if(state.buildQueue.length)pumpBuild();
+    if(state.tileQueue.length)pumpTileQueue();
   }
-  function getCandidateTiles(lon,lat){return state.tileCells.get(Math.floor(lon/CELL_DEG)+','+Math.floor(lat/CELL_DEG))||[];}
+  function candidateTiles(lon,lat){return state.tileCells.get(Math.floor(lon/GRID_DEG)+','+Math.floor(lat/GRID_DEG))||[];}
   function baryZ(x,y,a,b,c){
     const den=(b[1]-c[1])*(a[0]-c[0])+(c[0]-b[0])*(a[1]-c[1]);if(Math.abs(den)<1e-8)return null;
     const u=((b[1]-c[1])*(x-c[0])+(c[0]-b[0])*(y-c[1]))/den;
     const v=((c[1]-a[1])*(x-c[0])+(a[0]-c[0])*(y-c[1]))/den,w=1-u-v;
-    if(u<-.025||v<-.025||w<-.025)return null;
+    if(u<-.035||v<-.035||w<-.035||u>1.035||v>1.035||w>1.035)return null;
     return u*a[2]+v*b[2]+w*c[2];
   }
-  function sampleRoadHeight(lon,lat,explicitZ){
-    if(finite(explicitZ)&&Math.abs(explicitZ)>.5)return explicitZ;
-    const candidates=getCandidateTiles(lon,lat);let best=-Infinity;
-    for(const tile of candidates){
-      if(!tile.heightGrid)continue;
-      if(distanceXY(lat,lon,tile.lat,tile.lon)>tile.radius+20)continue;
-      const sx=111319.49*Math.cos(tile.lat*RAD),x=(lon-tile.lon)*sx,y=(lat-tile.lat)*110574;
-      const cx=Math.floor(x/CFG.HEIGHT_GRID_M),cy=Math.floor(y/CFG.HEIGHT_GRID_M),seen=new Set();
+  function sampleRoadHeight(lon,lat,route,preferredHeight){
+    const tiles=candidateTiles(lon,lat).filter(tile=>tile.built&&tile.heightGrid&&distanceXY(lat,lon,tile.lat,tile.lon)<=tile.radius+25);
+    if(!tiles.length)return NaN;
+    const collectAt=(tile,x,y)=>{
+      const cx=Math.floor(x/CFG.TILE_CELL_M),cy=Math.floor(y/CFG.TILE_CELL_M),seen=new Set(),out=[];
       for(let ox=-1;ox<=1;ox++)for(let oy=-1;oy<=1;oy++){
         const list=tile.heightGrid.get((cx+ox)+','+(cy+oy));if(!list)continue;
-        for(const ti of list){if(seen.has(ti))continue;seen.add(ti);
-          const a=tile.values,b=ti*9;
-          const z=baryZ(x,y,[a[b],a[b+1],a[b+2]],[a[b+3],a[b+4],a[b+5]],[a[b+6],a[b+7],a[b+8]]);
-          if(z!==null&&z>best)best=z;
+        for(const ti of list){if(seen.has(ti))continue;seen.add(ti);const a=tile.values,j=ti*9;
+          const z=baryZ(x,y,[a[j],a[j+1],a[j+2]],[a[j+3],a[j+4],a[j+5]],[a[j+6],a[j+7],a[j+8]]);
+          if(z!==null&&finite(z))out.push(z);
         }
       }
+      return out;
+    };
+    let heights=[];
+    for(const tile of tiles){
+      const sx=111319.49*Math.cos(tile.lat*RAD),x=(lon-tile.lon)*sx,y=(lat-tile.lat)*110574;
+      heights.push(...collectAt(tile,x,y));
     }
-    return finite(best)?best:NaN;
-  }
-  function refreshLamps(f){
-    const v2=CFG.LAMP_VISIBLE_RADIUS_M**2,h2=CFG.LAMP_HIDE_RADIUS_M**2;
-    for(const lamp of state.lamps){
-      const d2=(lamp.x-f.x)**2+(lamp.y-f.y)**2;
-      if(d2>h2){lamp.pole.show=false;lamp.point.show=false;continue;}
-      if(d2>v2){lamp.pole.show=false;lamp.point.show=false;continue;}
-      lamp.pole.show=true;lamp.point.show=state.nightFactor>.025;
-    }
-  }
-  function parseMeters(v){if(v===undefined||v===null)return NaN;const m=String(v).trim().toLowerCase().match(/[0-9]+(?:\.[0-9]+)?/);if(!m)return NaN;let n=Number(m[0]);if(/ft|feet|foot|'/i.test(String(v)))n*=.3048;return n;}
-  function roadWidth(p){const n=parseMeters(p.lanes)||2,w=parseMeters(p.width||p['width:carriageway']);return finite(w)&&w>=4&&w<=40?w:clamp(n*3.5+2.4,5.8,31);}
-  function expressway(p){const h=p&&p.highway;if(h==='motorway'||h==='motorway_link')return true;if(CFG.INCLUDE_TOLL_TRUNK&&(h==='trunk'||h==='trunk_link'))return p.toll==='yes'||/高速|expressway|E\d+|阪神高速|名神高速/.test([p.name,p.ref,p.destination].filter(Boolean).join(' '));return false;}
-  function meters(a,b){const p1=a.lat*RAD,p2=b.lat*RAD,dp=(b.lat-a.lat)*RAD,dl=(b.lon-a.lon)*RAD;const q=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;return 2*R*Math.asin(Math.min(1,Math.sqrt(q)));}
-  function makeRoute(feature){
-    const p=feature.properties||{},coords=feature.geometry&&feature.geometry.coordinates;if(!Array.isArray(coords)||coords.length<2)return null;
-    const pts=[];for(const c of coords){if(!Array.isArray(c)||!finite(+c[0])||!finite(+c[1]))continue;pts.push({lon:+c[0],lat:+c[1],z:c.length>2&&finite(+c[2])?+c[2]:NaN});}
-    if(pts.length<2)return null;const cum=new Float64Array(pts.length);let len=0;
-    for(let i=1;i<pts.length;i++){len+=meters(pts[i-1],pts[i]);cum[i]=len;}if(len<CFG.ROUTE_MIN_LENGTH_M)return null;
-    return {pts,cum,len,width:roadWidth(p),props:p};
-  }
-  function locate(route,d){let lo=0,hi=route.cum.length-1;while(lo+1<hi){const m=(lo+hi)>>1;if(route.cum[m]<=d)lo=m;else hi=m;}return Math.min(lo,route.cum.length-2);}
-  function pointAt(route,d){d=clamp(d,0,route.len);const i=locate(route,d),a=route.pts[i],b=route.pts[i+1],span=Math.max(.001,route.cum[i+1]-route.cum[i]),t=clamp((d-route.cum[i])/span,0,1);return {lon:a.lon+(b.lon-a.lon)*t,lat:a.lat+(b.lat-a.lat)*t,z:finite(a.z)&&finite(b.z)?a.z+(b.z-a.z)*t:finite(a.z)?a.z:finite(b.z)?b.z:NaN};}
-  function tangent(route,d){const a=pointAt(route,Math.max(0,d-4)),b=pointAt(route,Math.min(route.len,d+4)),east=(b.lon-a.lon)*SX,north=(b.lat-a.lat)*SY,n=Math.max(.001,Math.hypot(east,north));return {east:east/n,north:north/n,heading:Math.atan2(east,north)};}
-  function makeCars(){
-    let id=0;
-    for(const route of state.routes){
-      const one=String(route.props.oneway||'').toLowerCase(),dirs=one==='yes'||one==='1'||one==='true'?[1]:one==='-1'?[-1]:[1,-1];
-      const lanes=clamp(Math.round(parseMeters(route.props.lanes)||2),1,4),lanePerDir=dirs.length===1?lanes:Math.max(1,Math.floor(lanes/2));
-      const count=Math.max(1,Math.floor((route.len-20)/CFG.CAR_SPACING_M));
-      for(const dir of dirs)for(let lane=0;lane<lanePerDir;lane++)for(let j=0;j<count;j++){
-        if(state.cars.length>=CFG.MAX_CARS)return;
-        const progress=10+(j+.45+Math.random()*.1)*(route.len-20)/count;
-        state.cars.push({id:id++,route,dir,lane,laneN:lanePerDir,progress,speed:CFG.CAR_SPEED_MPS*(.88+Math.random()*.24),lastHeightAt:0,height:NaN,front:null,rear:null});
+    // Centerline and mesh can differ by a few metres. Search nearby positions only when the exact point misses.
+    if(!heights.length){
+      const offsets=[[2,0],[-2,0],[0,2],[0,-2],[4,0],[-4,0],[0,4],[0,-4],[6,0],[-6,0],[0,6],[0,-6]];
+      for(const [oe,on] of offsets){
+        for(const tile of tiles){
+          const sx=111319.49*Math.cos(tile.lat*RAD),x=(lon-tile.lon)*sx+oe,y=(lat-tile.lat)*110574+on;
+          heights.push(...collectAt(tile,x,y));
+        }
+        if(heights.length)break;
       }
     }
+    if(!heights.length)return NaN;
+    heights.sort((a,b)=>a-b);
+    const p=route&&route.props||{},layer=Number(p.layer)||0;
+    const preferred=finite(preferredHeight)?preferredHeight:(route&&route.props&&finite(route.lastZ)?route.lastZ:NaN);
+    let z;
+    if(String(p.bridge).toLowerCase()==='yes'||layer>0)z=heights[heights.length-1];
+    else if(String(p.tunnel).toLowerCase()==='yes'||layer<0)z=heights[0];
+    else if(finite(preferred)&&heights.some(h=>Math.abs(h-preferred)<8)){
+      let best=Infinity;z=heights[0];for(const h of heights){const d=Math.abs(h-preferred);if(d<best){best=d;z=h;}}
+    }else z=heights[Math.floor((heights.length-1)*.5)];
+    if(route&&route.props)route.lastZ=z;
+    return z;
   }
-  function carPose(car){
-    const d=car.dir>0?car.progress:car.route.len-car.progress,p=pointAt(car.route,d),t=tangent(car.route,d);
-    const side=car.dir>0?-1:1,lateral=side*car.route.width*.22+(car.lane-(car.laneN-1)/2)*3.35;
-    const rightE=t.north,rightN=-t.east;
-    const east=t.east*lateral,north=t.north*lateral;
-    const lon=p.lon+east/(111319.49*Math.cos(p.lat*RAD)),lat=p.lat+north/110574;
-    const heading=car.dir>0?t.heading:t.heading+Math.PI;
-    return {lon,lat,z:p.z,heading};
+  function parseMeters(v){if(v===undefined||v===null)return NaN;const s=String(v).trim().toLowerCase(),m=s.match(/[0-9]+(?:\.[0-9]+)?/);if(!m)return NaN;let n=Number(m[0]);if(/ft|feet|foot|'/i.test(s))n*=.3048;return n;}
+  function roadWidth(p){
+    const actual=parseMeters(p.width||p['width:carriageway']);if(finite(actual)&&actual>=5&&actual<=42)return actual;
+    const one=String(p.oneway||'').toLowerCase(),lanes=parseMeters(p.lanes)||parseMeters(p['lanes:forward'])||((one==='yes'||one==='1'||one==='true')?2:4);
+    return clamp(lanes*3.55+2.7,7.5,36);
+  }
+  function isExpressway(p){
+    const h=p&&p.highway;
+    if(h==='motorway'||h==='motorway_link')return true;
+    if(h==='trunk'||h==='trunk_link')return p.toll==='yes'||/高速|expressway|阪神高速|名神高速/.test([p.name,p.ref,p.destination].filter(Boolean).join(' '));
+    return false;
+  }
+  function geoMeters(a,b){
+    const p1=a.lat*RAD,p2=b.lat*RAD,dp=(b.lat-a.lat)*RAD,dl=(b.lon-a.lon)*RAD;
+    const q=Math.sin(dp/2)**2+Math.cos(p1)*Math.cos(p2)*Math.sin(dl/2)**2;
+    return 2*R*Math.asin(Math.min(1,Math.sqrt(q)));
+  }
+  function makeLampRoute(feature,coords){
+    const props=feature.properties||{},pts=[];
+    for(const c of coords){if(!Array.isArray(c)||!finite(+c[0])||!finite(+c[1]))continue;pts.push({lon:+c[0],lat:+c[1],z:c.length>2&&finite(+c[2])?+c[2]:NaN});}
+    if(pts.length<2)return null;
+    const cum=new Float64Array(pts.length);let len=0;
+    for(let i=1;i<pts.length;i++){len+=geoMeters(pts[i-1],pts[i]);cum[i]=len;}
+    if(len<CFG.LAMP_SPACING_M)return null;
+    const count=Math.max(0,Math.floor((len-20)/CFG.LAMP_SPACING_M)+1);
+    return {id:String(feature.id||props['@id']||'expressway-route'),pts,cum,len,width:roadWidth(props),props,lampDone:new Uint8Array(count),lampAttempts:new Uint8Array(count),lastZ:NaN};
+  }
+  function lampRoutePoint(route,d){
+    let lo=0,hi=route.cum.length-1;while(lo+1<hi){const m=(lo+hi)>>1;if(route.cum[m]<=d)lo=m;else hi=m;}
+    const i=Math.min(lo,route.cum.length-2),a=route.pts[i],b=route.pts[i+1],span=Math.max(.001,route.cum[i+1]-route.cum[i]),t=clamp((d-route.cum[i])/span,0,1);
+    return {lon:a.lon+(b.lon-a.lon)*t,lat:a.lat+(b.lat-a.lat)*t};
+  }
+  function tangentGeo(route,d){
+    const a=lampRoutePoint(route,Math.max(0,d-4)),b=lampRoutePoint(route,Math.min(route.len,d+4));
+    const east=(b.lon-a.lon)*111319.49*Math.cos((a.lat+b.lat)*.5*RAD),north=(b.lat-a.lat)*110574,n=Math.max(.001,Math.hypot(east,north));
+    return {east:east/n,north:north/n};
+  }
+  function offsetLL(p,east,north){return {lon:p.lon+east/(111319.49*Math.max(.2,Math.cos(p.lat*RAD))),lat:p.lat+north/110574};}
+  function makeGlowCanvas(){
+    const c=document.createElement('canvas');c.width=32;c.height=32;const x=c.getContext('2d');
+    const g=x.createRadialGradient(16,16,0,16,16,16);
+    g.addColorStop(0,'rgba(255,246,218,0.95)');g.addColorStop(.12,'rgba(255,209,139,0.72)');g.addColorStop(.34,'rgba(255,170,78,0.28)');g.addColorStop(1,'rgba(255,145,45,0)');
+    x.fillStyle=g;x.fillRect(0,0,32,32);return c;
+  }
+  const glowImage=makeGlowCanvas();
+  state.poleCollection=scene.primitives.add(new C.PolylineCollection());
+  const poleMaterial=C.Material.fromType('Color',{color:poleColor});
+  state.lampPoints=scene.primitives.add(new C.PointPrimitiveCollection());
+  state.lampGlows=scene.primitives.add(new C.BillboardCollection());
+  state.carPoints=scene.primitives.add(new C.PointPrimitiveCollection());
+  function addLamp(route,index,side,p,z){
+    const t=tangentGeo(route,20+index*CFG.LAMP_SPACING_M),nx=-t.north*side,ny=t.east*side;
+    const edge=route.width*.5+CFG.LAMP_SIDE_MARGIN_M;
+    const baseLL=offsetLL(p,nx*edge,ny*edge),headLL=offsetLL(baseLL,-nx*CFG.LAMP_ARM_M,-ny*CFG.LAMP_ARM_M);
+    const key=Math.round(baseLL.lon*111319.49*Math.cos(baseLL.lat*RAD)/4)+','+Math.round(baseLL.lat*110574/4)+','+Math.round(z/5);
+    if(state.lampDedup.has(key))return;
+    state.lampDedup.set(key,1);
+    const base=C.Cartesian3.fromDegrees(baseLL.lon,baseLL.lat,z+.15);
+    const top=C.Cartesian3.fromDegrees(baseLL.lon,baseLL.lat,z+CFG.LAMP_POLE_HEIGHT_M);
+    const head=C.Cartesian3.fromDegrees(headLL.lon,headLL.lat,z+CFG.LAMP_POLE_HEIGHT_M);
+    const pole=state.poleCollection.add({positions:[base,top,head],width:1.1,material:poleMaterial,show:false});
+    const point=state.lampPoints.add({position:head,color:warm,pixelSize:CFG.LAMP_CORE_PX,outlineWidth:0,show:false,disableDepthTestDistance:0});
+    const glow=state.lampGlows.add({position:head,image:glowImage,width:CFG.LAMP_GLOW_PX,height:CFG.LAMP_GLOW_PX,color:new C.Color(1,1,1,.9),show:false,verticalOrigin:C.VerticalOrigin.CENTER,horizontalOrigin:C.HorizontalOrigin.CENTER,disableDepthTestDistance:0});
+    const lamp={x:baseLL.lon*SX,y:baseLL.lat*SY,pole,point,glow};state.lamps.push(lamp);
+  }
+  function buildLampsNear(f){
+    let added=0,misses=0;
+    for(const route of state.lampRoutes){
+      if(state.lamps.length>=CFG.LAMP_MAX_COUNT)break;
+      for(let i=0;i<route.lampDone.length;i++){
+        if(route.lampDone[i]||route.lampAttempts[i]>=3)continue;
+        const d=20+i*CFG.LAMP_SPACING_M,p=lampRoutePoint(route,d);
+        if(distanceXY(f.lat,f.lon,p.lat,p.lon)>CFG.LAMP_BUILD_RADIUS_M)continue;
+        const candidates=candidateTiles(p.lon,p.lat).filter(t=>distanceXY(p.lat,p.lon,t.lat,t.lon)<=t.radius+25);
+        if(!candidates.length){route.lampAttempts[i]=3;misses++;state.stats.lampHeightMisses++;continue;}
+        if(candidates.some(t=>!t.built))continue;
+        route.lampAttempts[i]++;
+        const z=sampleRoadHeight(p.lon,p.lat,route);
+        if(!finite(z)){
+          misses++;state.stats.lampHeightMisses++;continue;
+        }
+        addLamp(route,i,1,p,z);addLamp(route,i,-1,p,z);route.lampDone[i]=1;added+=2;
+      }
+    }
+    state.stats.lamps=state.lamps.length;
+    if(added)console.log('[OSAKA expressway lights v2] 街灯追加:',added,'基 / 合計:',state.lamps.length);
+    if(misses)console.log('[OSAKA expressway lights v2] 道路高度未取得:',misses,'地点（地面高度での代用なし）');
+  }
+  function endpointKey(c){return Math.round(Number(c[0])*1e6)+','+Math.round(Number(c[1])*1e6);}
+  function roadSignature(p){
+    return [p.highway||'',p.ref||p.name||'',p.lanes||'',p.oneway||'',p.bridge||'',p.layer||'',p.tunnel||''].join('|');
+  }
+  function mergeRoadSegments(segments){
+    const nodes=new Map();
+    for(let i=0;i<segments.length;i++){
+      const s=segments[i],sig=s.sig;
+      for(let end=0;end<2;end++){
+        const key=sig+'#'+endpointKey(end?s.coords[s.coords.length-1]:s.coords[0]);
+        let a=nodes.get(key);if(!a)nodes.set(key,a=[]);a.push({index:i,end});
+      }
+    }
+    const used=new Uint8Array(segments.length),merged=[];
+    const extend=(points,atFront,sig)=>{
+      for(let guard=0;guard<1000;guard++){
+        const endpoint=atFront?points[0]:points[points.length-1],list=nodes.get(sig+'#'+endpointKey(endpoint))||[];
+        const next=list.filter(x=>!used[x.index]);if(next.length!==1)break;
+        const pick=next[0],seg=segments[pick.index];used[pick.index]=1;
+        const coords=pick.end===0?seg.coords:seg.coords.slice().reverse();
+        if(atFront)points.unshift(...coords.slice(1).reverse());
+        else points.push(...coords.slice(1));
+      }
+    };
+    for(let i=0;i<segments.length;i++){
+      if(used[i])continue;
+      const s=segments[i];used[i]=1;const points=s.coords.slice();
+      extend(points,false,s.sig);extend(points,true,s.sig);
+      merged.push({id:s.id,props:s.props,coords:points});
+    }
+    return merged;
+  }
+  async function loadRoads(){
+    const r=await fetch(ROAD_URL,{cache:'no-store'});if(!r.ok)throw Error('道路GeoJSON HTTP '+r.status);
+    const data=await r.json();if(!data||!Array.isArray(data.features))throw Error('道路GeoJSON形式不正');
+    const segments=[];let wayIndex=0;
+    for(const f of data.features){
+      if(!f||!f.geometry||!isExpressway(f.properties||{}))continue;
+      const g=f.geometry,props=f.properties||{},fallbackId='expressway-way-'+(wayIndex++),id=String(f.id||props['@id']||fallbackId),sig=roadSignature(props);
+      const add=coords=>{if(Array.isArray(coords)&&coords.length>=2)segments.push({id,props,sig,coords});};
+      if(g.type==='LineString')add(g.coordinates);
+      else if(g.type==='MultiLineString')for(let i=0;i<g.coordinates.length;i++)add(g.coordinates[i]);
+    }
+    const merged=mergeRoadSegments(segments);
+    for(const f of merged){const route=makeLampRoute(f,f.coords);if(route)state.lampRoutes.push(route);}
+    state.stats.roads=state.lampRoutes.length;
+    console.log('[OSAKA expressway lights v2] 街灯対象道路:',state.lampRoutes.length,'連結way（motorway / motorway_link / 有料trunkのみ）、元セグメント:',segments.length);
+  }
+  function interpRoute(route,s){
+    s=clamp(s,0,route.len);const c=route.cum;let lo=0,hi=c.length-1;
+    while(lo+1<hi){const m=(lo+hi)>>1;if(c[m]<=s)lo=m;else hi=m;}
+    const i=Math.min(lo,route.n-2),d=Math.max(.001,c[i+1]-c[i]),t=clamp((s-c[i])/d,0,1),o=route.p;
+    const i0=Math.max(0,i-1),i3=Math.min(route.n-1,i+2),t2=t*t,t3=t2*t;
+    const h00=2*t3-3*t2+1,h10=t3-2*t2+t,h01=-2*t3+3*t2,h11=t3-t2,out=new Array(3);
+    for(let k=0;k<3;k++){
+      const p0=o[i0*3+k],p1=o[i*3+k],p2=o[(i+1)*3+k],p3=o[i3*3+k];
+      const den1=Math.max(.001,c[i+1]-c[i0]),den2=Math.max(.001,c[i3]-c[i]);
+      const m1=(p2-p0)/den1*d,m2=(p3-p1)/den2*d;
+      let v=h00*p1+h10*m1+h01*p2+h11*m2;if(k===2)v=clamp(v,Math.min(p1,p2)-.2,Math.max(p1,p2)+.2);out[k]=v;
+    }
+    return out;
+  }
+  function routeDistLL(a,b){return Math.hypot((a.lon-b.lon)*SX,(a.lat-b.lat)*SY);}
+  function locateTrafficRoute(route,s){const c=route.cum;let lo=0,hi=c.length-1;while(lo+1<hi){const m=(lo+hi)>>1;if(c[m]<=s)lo=m;else hi=m;}return Math.min(lo,route.n-2);}
+  function trafficPose(car,progress){
+    const r=car.route,s=car.dir>0?progress:r.len-progress,L=24;
+    const a=interpRoute(r,clamp(s-L,0,r.len)),b=interpRoute(r,clamp(s+L,0,r.len)),p=interpRoute(r,s);
+    const east=b[0]-a[0],north=b[1]-a[1],horizontal=Math.max(.01,Math.hypot(east,north));
+    let heading=Math.atan2(east,north),pitch=Math.atan2(b[2]-a[2],horizontal);
+    if(car.dir<0){heading+=Math.PI;pitch=-pitch;}
+    const off=car.lane===0?2.1:5.7,x=p[0]+Math.cos(heading)*off,y=p[1]-Math.sin(heading)*off;
+    return {lon:x/SX,lat:y/SY,alt:p[2],heading,pitch};
+  }
+  function hourlyFactor(){
+    const p=state.traffic&&state.traffic.hourly_profile&&state.traffic.hourly_profile.estimated_thousand_vehicles_per_hour;
+    if(!p||p.length!==24)return 1;
+    let h=0;try{const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Tokyo',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).formatToParts(new Date());const get=t=>Number(parts.find(x=>x.type===t)?.value||0);h=get('hour')+get('minute')/60;}catch(_){const d=new Date();h=d.getHours()+d.getMinutes()/60;}
+    const h0=Math.floor(h)%24,h1=(h0+1)%24,t=h-Math.floor(h),now=p[h0]*(1-t)+p[h1]*t;let base=0;for(let i=7;i<19;i++)base+=p[i]/12;
+    return clamp(now/Math.max(1,base),.08,1.25);
+  }
+  async function loadTraffic(){
+    if(typeof DecompressionStream==='undefined')throw Error('gzip DecompressionStream 非対応');
+    const r=await fetch(TRAFFIC_URL,{cache:'no-store'});if(!r.ok)throw Error('交通ルートHTTP '+r.status);
+    const stream=r.body.pipeThrough(new DecompressionStream('gzip')),data=await new Response(stream).json();
+    if(!data||data.version!==2||!Array.isArray(data.routes))throw Error('交通ルートJSON形式不正');
+    state.traffic=data.traffic||null;state.zoneMap=new Map((data.traffic_zones||[]).map(z=>[z.id,z]));
+    for(const src of data.routes){
+      if(!src.tz||!state.zoneMap.has(src.tz)||!Array.isArray(src.p)||src.p.length<5||Number(src.m)<250)continue;
+      const xyz=new Float64Array(src.p.length*3),cum=new Float64Array(src.p.length);
+      for(let i=0;i<src.p.length;i++){
+        const p=src.p[i];xyz[i*3]=Number(p[0])*SX;xyz[i*3+1]=Number(p[1])*SY;xyz[i*3+2]=finite(+p[2])?+p[2]:NaN;
+        if(i){const dx=xyz[i*3]-xyz[(i-1)*3],dy=xyz[i*3+1]-xyz[(i-1)*3+1];cum[i]=cum[i-1]+Math.hypot(dx,dy);}
+      }
+      const len=cum[cum.length-1];if(len<250)continue;
+      state.routes.push({id:src.id,zoneId:src.tz,p:xyz,cum,n:src.p.length,len,groups:[],lastZ:NaN});
+    }
+    console.log('[OSAKA expressway lights v2] 交通ルート:',state.routes.length,'本 / zones:',state.zoneMap.size);
+  }
+  function buildCars(){
+    const factor=hourlyFactor();let id=0;
+    for(const route of state.routes){
+      const z=state.zoneMap.get(route.zoneId);if(!z)continue;
+      const flow=(Number(z.vehicles_12h)||0)/12*factor*.5;
+      const density=flow/CFG.AVG_FLOW_SPEED_KMH/CFG.LANES_PER_DIRECTION;
+      const usable=route.len-36,maxLane=Math.max(0,Math.floor(usable/CFG.CAR_SPACING_M));
+      const count=Math.min(maxLane,Math.max(0,Math.round(density*route.len/1000)));
+      if(!count)continue;
+      for(const dir of [-1,1])for(let lane=0;lane<2;lane++){
+        const group=[];route.groups.push(group);state.groups.push(group);
+        for(let j=0;j<count;j++){
+          if(state.cars.length>=CFG.CAR_MAX_COUNT)break;
+          const spacing=usable/count,progress=18+(j+.5)*spacing+(Math.random()-.5)*Math.min(3,spacing*.03),speed=clamp(CFG.MIN_SPEED_MPS+Math.random()*(CFG.MAX_SPEED_MPS-CFG.MIN_SPEED_MPS),CFG.MIN_SPEED_MPS,CFG.MAX_SPEED_MPS);
+          const car={id:id++,route,dir,lane,progress,prevProgress:progress,speed,targetSpeed:speed,cruiseSpeed:speed,nextSpeedChange:performance.now()+rand(4000,9000),height:NaN,lastHeightAt:0,body:null,front:null,rear:null,sleeping:false,respawnAt:0};
+          state.cars.push(car);group.push(car);
+        }
+        group.sort((a,b)=>a.progress-b.progress);
+      }
+    }
+    state.stats.cars=state.cars.length;
+    console.log('[OSAKA expressway lights v2] 走行車両:',state.cars.length.toLocaleString(),'台（GLBなし・小さな車体点＋前白灯＋後赤灯） / 時間係数:',factor.toFixed(2));
+  }
+  function rand(a,b){return a+Math.random()*(b-a);}
+  function updateMotion(dt,now){
+    for(const group of state.groups){
+      let resort=false;
+      for(let i=group.length-1;i>=0;i--){
+        const car=group[i];
+        if(car.sleeping){
+          if(now>=car.respawnAt){car.progress=rand(18,38);car.prevProgress=car.progress;car.speed=rand(CFG.MIN_SPEED_MPS,CFG.MAX_SPEED_MPS);car.targetSpeed=car.speed;car.cruiseSpeed=car.speed;car.nextSpeedChange=now+rand(4000,9000);car.sleeping=false;resort=true;}else continue;
+        }
+        car.prevProgress=car.progress;
+        if(now>=car.nextSpeedChange){car.targetSpeed=clamp(car.cruiseSpeed+rand(-1.1,1.1),CFG.MIN_SPEED_MPS,CFG.MAX_SPEED_MPS);car.nextSpeedChange=now+rand(6500,12000);}
+        const leader=i===group.length-1?null:group[i+1];let target=car.targetSpeed;
+        if(leader&&!leader.sleeping){const gap=leader.progress-car.progress,safe=CFG.SAFE_GAP_M+car.speed*CFG.HEADWAY_S;if(gap>0&&gap<safe)target=Math.min(target,Math.max(3,(gap-CFG.SAFE_GAP_M)/CFG.HEADWAY_S));}
+        car.speed+=clamp(target-car.speed,-CFG.BRAKE_MPS2*dt,CFG.ACCEL_MPS2*dt);car.progress+=car.speed*dt;
+        if(car.progress>=car.route.len-12){car.sleeping=true;car.respawnAt=now+rand(1800,3200);if(car.body)car.body.show=false;if(car.front)car.front.show=false;if(car.rear)car.rear.show=false;resort=true;}
+      }
+      if(resort)group.sort((a,b)=>a.progress-b.progress);
+    }
+  }
+  function pointForCar(pose,z,offsetM){
+    const e=Math.sin(pose.heading)*offsetM,n=Math.cos(pose.heading)*offsetM;
+    return C.Cartesian3.fromDegrees(pose.lon+e/(111319.49*Math.max(.2,Math.cos(pose.lat*RAD))),pose.lat+n/110574,z);
   }
   function updateCars(now,dt,f){
-    const limit2=CFG.CAR_VISIBLE_M**2,night=state.nightFactor>.025;
+    const limit2=CFG.CAR_VISIBLE_RADIUS_M*CFG.CAR_VISIBLE_RADIUS_M,night=state.nightFactor>.025,alpha=clamp(dt/(CFG.CAR_UPDATE_MS/1000),0,1);
     for(const car of state.cars){
-      car.progress+=car.speed*dt;if(car.progress>=car.route.len)car.progress%=car.route.len;
-      const p=carPose(car),d2=((p.lon*SX-f.x)**2+(p.lat*SY-f.y)**2);
-      if(d2>limit2||!night){if(car.front)car.front.show=false;if(car.rear)car.rear.show=false;continue;}
+      if(car.sleeping)continue;
+      const progress=car.prevProgress+(car.progress-car.prevProgress)*alpha,pose=trafficPose(car,progress);
+      const dx=(pose.lon-f.lon)*SX,dy=(pose.lat-f.lat)*SY,d2=dx*dx+dy*dy;
+      if(d2>limit2){if(car.body)car.body.show=false;if(car.front)car.front.show=false;if(car.rear)car.rear.show=false;continue;}
       if(now-car.lastHeightAt>=CFG.CAR_HEIGHT_REFRESH_MS){
-        car.lastHeightAt=now;car.height=sampleRoadHeight(p.lon,p.lat,p.z);
-        if(!finite(car.height))state.stats.roadHeightMisses++;
+        car.lastHeightAt=now;
+        const z=sampleRoadHeight(pose.lon,pose.lat,car.route,car.height);
+        car.height=finite(z)?z:(finite(pose.alt)?pose.alt:NaN);
       }
-      if(!finite(car.height)){if(car.front)car.front.show=false;if(car.rear)car.rear.show=false;continue;}
-      const fe=Math.sin(p.heading),fn=Math.cos(p.heading),near=Math.sqrt(d2)<1600,px=near?CFG.CAR_NEAR_PX:CFG.CAR_FAR_PX;
-      const front=C.Cartesian3.fromDegrees(p.lon+fe*CFG.CAR_FRONT_M/(111319.49*Math.cos(p.lat*RAD)),p.lat+fn*CFG.CAR_FRONT_M/110574,car.height+CFG.CAR_LIGHT_HEIGHT_M);
-      const rear=C.Cartesian3.fromDegrees(p.lon-fe*CFG.CAR_REAR_M/(111319.49*Math.cos(p.lat*RAD)),p.lat-fn*CFG.CAR_REAR_M/110574,car.height+CFG.CAR_LIGHT_HEIGHT_M);
-      if(!car.front)car.front=state.points.add({position:front,color:white,pixelSize:px,show:true,outlineWidth:0,disableDepthTestDistance:0});
-      else{car.front.position=front;car.front.pixelSize=px;car.front.show=true;}
-      if(!car.rear)car.rear=state.points.add({position:rear,color:red,pixelSize:px,show:true,outlineWidth:0,disableDepthTestDistance:0});
-      else{car.rear.position=rear;car.rear.pixelSize=px;car.rear.show=true;}
+      if(!finite(car.height)){if(car.body)car.body.show=false;if(car.front)car.front.show=false;if(car.rear)car.rear.show=false;continue;}
+      const d=Math.sqrt(d2),near=d<1800,bodyPx=near?CFG.CAR_BODY_PX_NEAR:.85,lightPx=near?CFG.CAR_LIGHT_PX_NEAR:CFG.CAR_LIGHT_PX_FAR;
+      const center=C.Cartesian3.fromDegrees(pose.lon,pose.lat,car.height+CFG.CAR_LIGHT_HEIGHT_M);
+      const front=pointForCar(pose,car.height+CFG.CAR_LIGHT_HEIGHT_M,CFG.CAR_FRONT_M);
+      const rear=pointForCar(pose,car.height+CFG.CAR_LIGHT_HEIGHT_M,-CFG.CAR_REAR_M);
+      if(!car.body)car.body=state.carPoints.add({position:center,color:bodyColor,pixelSize:bodyPx,outlineWidth:0,show:true,disableDepthTestDistance:0});
+      else{car.body.position=center;car.body.pixelSize=bodyPx;car.body.show=true;}
+      if(!car.front)car.front=state.carPoints.add({position:front,color:white,pixelSize:lightPx,outlineWidth:0,show:night,disableDepthTestDistance:0});
+      else{car.front.position=front;car.front.pixelSize=lightPx;car.front.show=night;}
+      if(!car.rear)car.rear=state.carPoints.add({position:rear,color:red,pixelSize:lightPx,outlineWidth:0,show:night,disableDepthTestDistance:0});
+      else{car.rear.position=rear;car.rear.pixelSize=lightPx;car.rear.show=night;}
     }
   }
-  function hideAll(){for(const l of state.lamps){l.pole.show=false;l.point.show=false;}for(const c of state.cars){if(c.front)c.front.show=false;if(c.rear)c.rear.show=false;}}
+  function refreshLampVisibility(f){
+    const r2=CFG.LAMP_VISIBLE_RADIUS_M*CFG.LAMP_VISIBLE_RADIUS_M,night=state.nightFactor>.025;
+    for(const l of state.lamps){const dx=l.x-f.x,dy=l.y-f.y,show=dx*dx+dy*dy<=r2;
+      l.pole.show=show;l.point.show=show&&night;l.glow.show=show&&night;
+      if(l.glow&&l.glow.color)l.glow.color=new C.Color(1,1,1,.48+.45*state.nightFactor);
+    }
+  }
+  function hideAll(){
+    for(const l of state.lamps){l.pole.show=false;l.point.show=false;l.glow.show=false;}
+    for(const c of state.cars){if(c.body)c.body.show=false;if(c.front)c.front.show=false;if(c.rear)c.rear.show=false;}
+  }
   state.stop=()=>{
     if(!state.active)return;state.active=false;
     try{if(g.api.removeFrameCallback&&state.callback)g.api.removeFrameCallback(state.callback);else if(scene.preRender&&state.callback)scene.preRender.removeEventListener(state.callback);}catch(_){}
-    hideAll();try{scene.primitives.remove(state.points);}catch(_){}try{scene.primitives.remove(state.poles);}catch(_){}
-    state.buildQueue.length=0;state.lamps.length=0;state.cars.length=0;state.tiles.length=0;state.buffer=null;
-    if(window.__osakaPointLights===state)window.__osakaPointLights=null;
-    console.log('[OSAKA road lights v4] stopped');
+    hideAll();
+    for(const p of [state.poleCollection,state.lampPoints,state.lampGlows,state.carPoints])try{if(p)scene.primitives.remove(p);}catch(_){}
+    state.tileQueue.length=0;state.lamps.length=0;state.cars.length=0;state.groups.length=0;state.tiles.length=0;state.buffer=null;
+    if(window.__osakaExpresswayNightTraffic===state)window.__osakaExpresswayNightTraffic=null;
+    console.log('[OSAKA expressway lights v2] 停止しました');
   };
 
   try{
-    console.log('[OSAKA road lights v4] 高速道路コリジョンを読み込み中...');
-    const [_,roadResponse]=await Promise.all([loadCollision(),fetch(ROAD_URL,{cache:'no-store'})]);
-    if(!state.active)return;
-    if(!roadResponse.ok)throw Error('GeoJSON HTTP '+roadResponse.status);
-    const data=await roadResponse.json();if(!data||!Array.isArray(data.features))throw Error('GeoJSON形式が違います');
-    for(const feature of data.features){if(!feature||!feature.geometry||feature.geometry.type!=='LineString'||!expressway(feature.properties||{}))continue;const route=makeRoute(feature);if(route)state.routes.push(route);}
-    makeCars();state.stats.ways=state.routes.length;state.stats.cars=state.cars.length;
-    state.lampDedup=new Set();
-    console.log('[OSAKA road lights v4] 高速道路:',state.routes.length,'ways / 点灯車両:',state.cars.length,'台（GLB車両モデルなし）');
-    console.log('[OSAKA road lights v4] 街灯はRoadCollisionの道路面外周から抽出。地面getHeightは使用しません。左右端50m間隔 / 路面から',CFG.LAMP_POLE_HEIGHT_M,'m');
     const f=focus();if(!f)throw Error('航空機位置が取得できません');
-    queueNearbyTiles(f);const now=performance.now();state.lastTick=now;state.lastTileScan=now;state.lastLampVisibility=now;state.lastCarUpdate=now;state.lastNight=0;
-    function tick(){
-      if(!state.active)return;const t=performance.now(),f=focus();if(!f)return;
-      updateNight(t,f);
-      if(t-state.lastTileScan>=CFG.TILE_SCAN_MS){state.lastTileScan=t;queueNearbyTiles(f);}
-      if(t-state.lastLampVisibility>=CFG.LAMP_VISIBILITY_MS){state.lastLampVisibility=t;refreshLamps(f);}
-      if(t-state.lastCarUpdate>=CFG.CAR_UPDATE_MS){const dt=clamp((t-state.lastCarUpdate)/1000,0,.25);state.lastCarUpdate=t;updateCars(t,dt,f);}
-    }
-    state.callback=tick;
-    if(g.api.addFrameCallback)g.api.addFrameCallback(tick);else if(scene.preRender&&scene.preRender.addEventListener)scene.preRender.addEventListener(tick);else throw Error('frame callback APIがありません');
-    tick();
-    console.log('[OSAKA road lights v4] 稼働開始。照明は小さい点、支柱は細い1px線、青色光なし。',state.stats);
-  }catch(e){console.error('[OSAKA road lights v4] 起動失敗:',e);state.stop();}
-})().catch(e=>console.error('[OSAKA road lights v4] fatal:',e));
+    console.log('[OSAKA expressway lights v2] データ読み込み中...');
+    await Promise.all([loadCollision(),loadRoads(),loadTraffic()]);if(!state.active)return;
+    queueNearbyTiles(f);
+    while(state.tilePump||state.tileQueue.length){await sleep(100);if(!state.active)return;}
+    buildCars();buildLampsNear(f);
+    const now=performance.now();state.lastNight=0;state.lastTileScan=now;state.lastLampScan=now;state.lastCarUpdate=now;state.lastVisibility=0;
+    let lastMotion=now;
+    state.callback=()=>{
+      if(!state.active)return;const t=performance.now(),p=focus();if(!p)return;
+      updateNight(t,p);
+      if(t-state.lastTileScan>=CFG.TILE_SCAN_MS){state.lastTileScan=t;queueNearbyTiles(p);}
+      if(t-state.lastLampScan>=CFG.LAMP_SCAN_MS){state.lastLampScan=t;buildLampsNear(p);}
+      if(t-state.lastVisibility>=900){state.lastVisibility=t;refreshLampVisibility(p);}
+      if(t-state.lastCarUpdate>=CFG.CAR_UPDATE_MS){const dt=clamp((t-lastMotion)/1000,.06,.24);lastMotion=t;state.lastCarUpdate=t;updateMotion(dt,t);updateCars(t,dt,p);}
+    };
+    if(g.api.addFrameCallback)g.api.addFrameCallback(state.callback);else if(scene.preRender&&scene.preRender.addEventListener)scene.preRender.addEventListener(state.callback);else throw Error('frame callback APIなし');
+    refreshLampVisibility(f);state.callback();
+    console.log('[OSAKA expressway lights v2] 起動完了:',{roads:state.stats.roads,streetLamps:state.stats.lamps,cars:state.stats.cars,collisionTiles:state.stats.tilesBuilt,triangles:state.stats.triangles,streetLampSpacing:CFG.LAMP_SPACING_M,lightHeightAboveRoad:CFG.LAMP_POLE_HEIGHT_M,vehicleModels:false,nightFactor:state.nightFactor});
+  }catch(e){console.error('[OSAKA expressway lights v2] 起動失敗:',e);state.stop();}
+})().catch(e=>console.error('[OSAKA expressway lights v2] fatal:',e));
