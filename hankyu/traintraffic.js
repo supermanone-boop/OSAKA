@@ -1,5 +1,5 @@
 /*
- * HANKYU GEOFS TRAFFIC v1.1 - Cesium 1.96 compatible
+ * HANKYU GEOFS TRAFFIC v1.4 - Cesium 1.96 compatible
  * Upload all package assets to the same Hugging Face repository, then paste this file into GeoFS DevTools Console.
  * Route paths are reconstructed from the supplied GeoJSON. Station coordinates are fetched from the public station API.
  */
@@ -24,10 +24,11 @@
     stationSnapMeters:220,          // stations farther from the selected path are ignored
     stationStopOffset:0,            // meters from station track projection
     trackLift:0.45,                 // rail/sleeper clearance above terrain
+    modelHeightOffset:1.5,          // raise each train model 1.5 m above the route/track placement height
     terrainBatchSize:350,
     terrainSampleEvery:1,           // sample all source path vertices
     updateMaxDelta:0.12,
-    modelForwardCorrection:0,        // rotate if model nose orientation requires it: 0 / Math.PI
+    modelForwardCorrection:Math.PI, // rotate the train 180 degrees horizontally to reverse its nose direction
     showRouteDebug:false
   };
   const CAR_FILES=[
@@ -146,14 +147,13 @@
 
   // Each car is one independently oriented GLB. This is what allows the consist to articulate through curves.
   function carModelMatrix(pos,heading){
-    const p=C.Cartesian3.fromDegrees(pos.lon,pos.lat,pos.height||0);
+    const p=C.Cartesian3.fromDegrees(pos.lon,pos.lat,(pos.height||0)+CONFIG.modelHeightOffset);
     const enu=C.Transforms.eastNorthUpToFixedFrame(p);
-    // GLB is Y-up, longitudinal axis Z; its lead cab points toward local -Z.
-    // X-rotation converts Y-up to ENU Z-up; Z-rotation then aligns -Z with the track bearing.
-    const rz=C.Matrix3.fromRotationZ(-heading+CONFIG.modelForwardCorrection,new C.Matrix3());
-    const rx=C.Matrix3.fromRotationX(Math.PI/2,new C.Matrix3());
-    const rot=C.Matrix3.multiply(rz,rx,new C.Matrix3());
-    const r4=C.Matrix4.fromRotationTranslation(rot,C.Cartesian3.ZERO,new C.Matrix4());
+    // Cesium 1.96 already converts glTF Y-up / +Z-forward into its Z-up / +X-forward frame.
+    // Do NOT apply an extra X rotation here: it rolls the train 90 degrees.
+    // In ENU, +X is east; rotate it by (90deg - bearing) to align it with the track.
+    const rz=C.Matrix3.fromRotationZ(Math.PI/2-heading+CONFIG.modelForwardCorrection,new C.Matrix3());
+    const r4=C.Matrix4.fromRotationTranslation(rz,C.Cartesian3.ZERO,new C.Matrix4());
     return C.Matrix4.multiply(enu,r4,new C.Matrix4());
   }
 
