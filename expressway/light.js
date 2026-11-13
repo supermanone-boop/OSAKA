@@ -2,7 +2,7 @@
 (async()=>{
   const C=window.Cesium,g=window.geofs,viewer=g&&g.api&&g.api.viewer,scene=viewer&&viewer.scene;
   if(!C||!g||!viewer||!scene||!C.PointPrimitiveCollection||!C.BillboardCollection||!C.PolylineCollection){
-    console.error('[OSAKA expressway lights v2] Cesium / GeoFS API不足');return;
+    console.error('[OSAKA expressway lights v4] Cesium / GeoFS API不足');return;
   }
 
   const ROOT='https://raw.githubusercontent.com/supermanone-boop/model/main/';
@@ -14,6 +14,10 @@
   ];
   const CFG={
     LAMP_SPACING_M:50,
+    LAMP_STATION_START_M:25,
+    LAMP_PAIR_ENDPOINT_MAX_M:65,
+    LAMP_PAIR_MIN_SEPARATION_M:6,
+    LAMP_PAIR_MAX_SEPARATION_M:55,
     LAMP_POLE_HEIGHT_M:14,
     LAMP_SIDE_MARGIN_M:1.6,
     LAMP_ARM_M:4.5,
@@ -24,19 +28,25 @@
     TILE_CELL_M:32,
     TILE_YIELD_TRIANGLES:12000,
     LAMP_MAX_COUNT:2400,
-    LAMP_GLOW_PX:12,
-    LAMP_CORE_PX:2.2,
+    LAMP_GLOW_PX:28,
+    LAMP_CORE_PX:3.4,
     CAR_VISIBLE_RADIUS_M:7500,
     CAR_SPACING_M:72,
     CAR_MAX_COUNT:14000,
     CAR_UPDATE_MS:120,
     CAR_HEIGHT_REFRESH_MS:800,
-    CAR_LIGHT_HEIGHT_M:0.95,
-    CAR_FRONT_M:2.0,
-    CAR_REAR_M:2.0,
-    CAR_BODY_PX_NEAR:1.25,
-    CAR_LIGHT_PX_NEAR:1.65,
-    CAR_LIGHT_PX_FAR:0.9,
+    CAR_LIGHT_HEIGHT_M:1.12,
+    CAR_FRONT_M:2.15,
+    CAR_REAR_M:2.05,
+    CAR_SIDE_M:0.62,
+    CAR_BODY_PX_NEAR:2.0,
+    CAR_BODY_PX_FAR:1.15,
+    CAR_LIGHT_PX_NEAR:3.2,
+    CAR_LIGHT_PX_FAR:2.0,
+    CAR_HEAD_GLOW_PX_NEAR:24,
+    CAR_HEAD_GLOW_PX_FAR:14,
+    CAR_TAIL_GLOW_PX_NEAR:18,
+    CAR_TAIL_GLOW_PX_FAR:11,
     AVG_FLOW_SPEED_KMH:72,
     LANES_PER_DIRECTION:2,
     MIN_SPEED_MPS:15.0,
@@ -59,11 +69,11 @@
   if(window.__osakaPointLights&&typeof window.__osakaPointLights.stop==='function')try{window.__osakaPointLights.stop();}catch(_){}
   if(window.__osakaTraffic&&window.__osakaTraffic.active&&typeof window.__osakaTraffic.stop==='function')try{window.__osakaTraffic.stop();}catch(_){}
 
-  const state={active:true,version:'2.0',buffer:null,tiles:[],tileCells:new Map(),tileQueue:[],tilePump:false,
-    lampRoutes:[],lamps:[],lampDedup:new Map(),traffic:null,routes:[],zoneMap:new Map(),groups:[],cars:[],
-    poleCollection:null,lampPoints:null,lampGlows:null,carPoints:null,callback:null,
-    nightFactor:0,sunElevation:90,lastNight:0,lastTileScan:0,lastLampScan:0,lastCarUpdate:0,lastVisibility:0,
-    scanPromise:null,stats:{tiles:0,triangles:0,tilesBuilt:0,lamps:0,lampHeightMisses:0,roads:0,cars:0,visibleCars:0}};
+  const state={active:true,version:'4.0',buffer:null,tiles:[],tileCells:new Map(),tileQueue:[],tilePump:false,
+    lampRoutes:[],lampPaths:[],lamps:[],lampStationDedup:new Map(),traffic:null,routes:[],zoneMap:new Map(),groups:[],cars:[],
+    poleCollection:null,lampPoints:null,lampGlows:null,carPoints:null,carGlows:null,callback:null,
+    nightFactor:0,sunElevation:90,forceNight:null,bloomStage:null,bloomWasEnabled:false,bloomUniformsOriginal:null,lastNight:0,lastTileScan:0,lastLampScan:0,lastCarUpdate:0,lastVisibility:0,
+    scanPromise:null,stats:{tiles:0,triangles:0,tilesBuilt:0,lamps:0,lampHeightMisses:0,roads:0,lampPaths:0,cars:0,visibleCars:0}};
   window.__osakaExpresswayNightTraffic=state;
 
   const warm=new C.Color(1,.78,.43,1);
@@ -93,10 +103,23 @@
     const ha=(mins/4-180)*RAD,phi=lat*RAD;
     return Math.asin(clamp(Math.sin(phi)*Math.sin(dec)+Math.cos(phi)*Math.cos(dec)*Math.cos(ha),-1,1))/RAD;
   }
+  function simulationDate(){
+    try{
+      const t=viewer.clock&&viewer.clock.currentTime;
+      if(t&&C.JulianDate&&typeof C.JulianDate.toDate==='function')return C.JulianDate.toDate(t);
+    }catch(_){}
+    return new Date();
+  }
   function updateNight(now,f){
-    if(now-state.lastNight<CFG.NIGHT_UPDATE_MS)return;
-    state.lastNight=now;state.sunElevation=sunElevation(f.lat,f.lon,new Date());
-    state.nightFactor=clamp((CFG.NIGHT_START_DEG-state.sunElevation)/(CFG.NIGHT_START_DEG-CFG.NIGHT_FULL_DEG),0,1);
+    if(now-state.lastNight<CFG.NIGHT_UPDATE_MS&&state.forceNight===null)return;
+    state.lastNight=now;
+    if(state.forceNight!==null){
+      state.nightFactor=state.forceNight===true?1:state.forceNight===false?0:clamp(Number(state.forceNight)||0,0,1);
+    }else{
+      state.sunElevation=sunElevation(f.lat,f.lon,simulationDate());
+      state.nightFactor=clamp((CFG.NIGHT_START_DEG-state.sunElevation)/(CFG.NIGHT_START_DEG-CFG.NIGHT_FULL_DEG),0,1);
+    }
+    if(state.bloomStage){try{state.bloomStage.enabled=state.nightFactor>.08;}catch(_){}}
   }
   function addTileToGrid(tile){
     const dLat=tile.radius/110574+.00012,dLon=tile.radius/(111319.49*Math.max(.2,Math.cos(tile.lat*RAD)))+.00012;
@@ -130,7 +153,7 @@
     }
     if(o!==v.byteLength)throw Error('OSCR末尾サイズ不一致 '+(v.byteLength-o));
     state.buffer=buffer;state.stats.tiles=count;state.stats.triangles=total;
-    console.log('[OSAKA expressway lights v2] 高度タイル:',count,'/ 三角形:',total.toLocaleString());
+    console.log('[OSAKA expressway lights v4] 高度タイル:',count,'/ 三角形:',total.toLocaleString());
   }
   function addHeightTri(grid,index,a,b,c){
     const minX=Math.floor(Math.min(a[0],b[0],c[0])/CFG.TILE_CELL_M),maxX=Math.floor(Math.max(a[0],b[0],c[0])/CFG.TILE_CELL_M);
@@ -152,7 +175,7 @@
     if(state.tilePump||!state.active)return;state.tilePump=true;
     while(state.active&&state.tileQueue.length){
       const tile=state.tileQueue.shift();
-      try{await buildHeightTile(tile);}catch(e){tile.queued=false;console.warn('[OSAKA expressway lights v2] 高度タイル処理失敗',tile.ix,tile.iy,e);}
+      try{await buildHeightTile(tile);}catch(e){tile.queued=false;console.warn('[OSAKA expressway lights v4] 高度タイル処理失敗',tile.ix,tile.iy,e);}
       await sleep(0);
     }
     state.tilePump=false;
@@ -239,8 +262,7 @@
     const cum=new Float64Array(pts.length);let len=0;
     for(let i=1;i<pts.length;i++){len+=geoMeters(pts[i-1],pts[i]);cum[i]=len;}
     if(len<CFG.LAMP_SPACING_M)return null;
-    const count=Math.max(0,Math.floor((len-20)/CFG.LAMP_SPACING_M)+1);
-    return {id:String(feature.id||props['@id']||'expressway-route'),pts,cum,len,width:roadWidth(props),props,lampDone:new Uint8Array(count),lampAttempts:new Uint8Array(count),lastZ:NaN};
+    return {id:String(feature.id||props['@id']||'expressway-route'),pts,cum,len,width:roadWidth(props),props,lastZ:NaN};
   }
   function lampRoutePoint(route,d){
     let lo=0,hi=route.cum.length-1;while(lo+1<hi){const m=(lo+hi)>>1;if(route.cum[m]<=d)lo=m;else hi=m;}
@@ -248,64 +270,170 @@
     return {lon:a.lon+(b.lon-a.lon)*t,lat:a.lat+(b.lat-a.lat)*t};
   }
   function tangentGeo(route,d){
-    const a=lampRoutePoint(route,Math.max(0,d-4)),b=lampRoutePoint(route,Math.min(route.len,d+4));
+    const a=lampRoutePoint(route,Math.max(0,d-8)),b=lampRoutePoint(route,Math.min(route.len,d+8));
     const east=(b.lon-a.lon)*111319.49*Math.cos((a.lat+b.lat)*.5*RAD),north=(b.lat-a.lat)*110574,n=Math.max(.001,Math.hypot(east,north));
     return {east:east/n,north:north/n};
   }
-  function offsetLL(p,east,north){return {lon:p.lon+east/(111319.49*Math.max(.2,Math.cos(p.lat*RAD))),lat:p.lat+north/110574};}
-  function makeGlowCanvas(){
-    const c=document.createElement('canvas');c.width=32;c.height=32;const x=c.getContext('2d');
-    const g=x.createRadialGradient(16,16,0,16,16,16);
-    g.addColorStop(0,'rgba(255,246,218,0.95)');g.addColorStop(.12,'rgba(255,209,139,0.72)');g.addColorStop(.34,'rgba(255,170,78,0.28)');g.addColorStop(1,'rgba(255,145,45,0)');
-    x.fillStyle=g;x.fillRect(0,0,32,32);return c;
+  function routeAtFraction(route,f){return lampRoutePoint(route,clamp(f,0,1)*route.len);}
+  function routeTangentAtFraction(route,f){return tangentGeo(route,clamp(f,0,1)*route.len);}
+  function corridorKey(route){
+    const p=route.props||{},h=String(p.highway||'');
+    if(h!=='motorway'&&h!=='motorway_link'&&h!=='trunk'&&h!=='trunk_link')return null;
+    const identity=String(p.ref||p.name||p['name:ja']||'').trim();
+    if(!identity)return null;
+    return h+'|'+identity;
   }
-  const glowImage=makeGlowCanvas();
+  function pairScore(a,b){
+    const a0=a.pts[0],a1=a.pts[a.pts.length-1],b0=b.pts[0],b1=b.pts[b.pts.length-1];
+    const same0=geoMeters(a0,b0),same1=geoMeters(a1,b1),rev0=geoMeters(a0,b1),rev1=geoMeters(a1,b0);
+    const reverseB=(rev0+rev1)<(same0+same1),e0=reverseB?rev0:same0,e1=reverseB?rev1:same1;
+    // Only pair genuinely opposite one-way carriageways; never merge parallel ramps flowing the same way.
+    if(!reverseB||Math.max(e0,e1)>CFG.LAMP_PAIR_ENDPOINT_MAX_M)return null;
+    const ratio=a.len/b.len;if(ratio<.55||ratio>1.8)return null;
+    const separations=[];
+    for(const f of [.15,.35,.5,.65,.85]){
+      const pa=routeAtFraction(a,f),pb=routeAtFraction(b,reverseB?1-f:f),sep=geoMeters(pa,pb);
+      if(sep<CFG.LAMP_PAIR_MIN_SEPARATION_M||sep>CFG.LAMP_PAIR_MAX_SEPARATION_M)return null;
+      const ta=routeTangentAtFraction(a,f),tb=routeTangentAtFraction(b,reverseB?1-f:f);
+      const dot=ta.east*(tb.east*(reverseB?-1:1))+ta.north*(tb.north*(reverseB?-1:1));
+      if(dot<.72)return null;
+      separations.push(sep);
+    }
+    const mean=separations.reduce((x,y)=>x+y,0)/separations.length;
+    if(Math.max(...separations)-Math.min(...separations)>Math.max(12,mean*.65))return null;
+    return {reverseB,score:e0+e1+Math.abs(a.len-b.len)*.08+mean*.15,separation:mean};
+  }
+  function makeLampPath(a,b=null,reverseB=false,separation=0){
+    const paired=!!b,len=paired?(a.len+b.len)*.5:a.len;
+    const count=Math.max(0,Math.floor((len-2*CFG.LAMP_STATION_START_M)/CFG.LAMP_SPACING_M)+1);
+    return {id:paired?a.id+'+'+b.id:a.id,a,b,reverseB,paired,len,separation,
+      edge:paired?separation*.5+(a.width+b.width)*.25+CFG.LAMP_SIDE_MARGIN_M:a.width*.5+CFG.LAMP_SIDE_MARGIN_M,
+      props:a.props,done:new Uint8Array(count),attempts:new Uint8Array(count)};
+  }
+  function buildLampPaths(routes){
+    const buckets=new Map();
+    for(let i=0;i<routes.length;i++){
+      const key=corridorKey(routes[i]);if(!key)continue;
+      let list=buckets.get(key);if(!list)buckets.set(key,list=[]);list.push(i);
+    }
+    const used=new Uint8Array(routes.length),paths=[];let paired=0;
+    for(const [key,indices] of buckets){
+      for(const i of indices){
+        if(used[i])continue;
+        const a=routes[i],pa=a.props||{};
+        if(String(pa.oneway||'').toLowerCase()!=='yes'&&String(pa.oneway||'')!=='1')continue;
+        let best=-1,bestInfo=null;
+        for(const j of indices){
+          if(j===i||used[j])continue;
+          const pb=routes[j].props||{};
+          if(String(pb.oneway||'').toLowerCase()!=='yes'&&String(pb.oneway||'')!=='1')continue;
+          const info=pairScore(a,routes[j]);
+          if(info&&(!bestInfo||info.score<bestInfo.score)){best=j;bestInfo=info;}
+        }
+        if(best>=0){used[i]=used[best]=1;paths.push(makeLampPath(a,routes[best],bestInfo.reverseB,bestInfo.separation));paired++;}
+      }
+    }
+    for(let i=0;i<routes.length;i++)if(!used[i])paths.push(makeLampPath(routes[i]));
+    console.log('[OSAKA expressway lights v4] 上下線ペア:',paired,'組 / 灯列ルート:',paths.length,'本（ペアの距離基準を共有）');
+    return paths;
+  }
+  function lampPathSamples(path,d){
+    const f=clamp(d/path.len,0,1),a=lampRoutePoint(path.a,f*path.a.len);
+    if(!path.paired)return {center:a,a,b:null,edge:path.edge};
+    const b=lampRoutePoint(path.b,(path.reverseB?1-f:f)*path.b.len);
+    const center={lon:(a.lon+b.lon)*.5,lat:(a.lat+b.lat)*.5};
+    const edge=geoMeters(a,b)*.5+(path.a.width+path.b.width)*.25+CFG.LAMP_SIDE_MARGIN_M;
+    return {center,a,b,edge};
+  }
+  function lampPathTangent(path,d){
+    const a=lampPathSamples(path,Math.max(0,d-8)).center,b=lampPathSamples(path,Math.min(path.len,d+8)).center;
+    const east=(b.lon-a.lon)*111319.49*Math.cos((a.lat+b.lat)*.5*RAD),north=(b.lat-a.lat)*110574,n=Math.max(.001,Math.hypot(east,north));
+    return {east:east/n,north:north/n};
+  }
+  function sampleLampPathHeight(path,samples){
+    const za=sampleRoadHeight(samples.a.lon,samples.a.lat,path.a);
+    if(!path.paired)return za;
+    const zb=sampleRoadHeight(samples.b.lon,samples.b.lat,path.b);
+    if(finite(za)&&finite(zb))return Math.abs(za-zb)<=6?(za+zb)*.5:NaN;
+    return finite(za)?za:finite(zb)?zb:NaN;
+  }
+  function offsetLL(p,east,north){return {lon:p.lon+east/(111319.49*Math.max(.2,Math.cos(p.lat*RAD))),lat:p.lat+north/110574};}
+  function makeGlowCanvas(kind){
+    const c=document.createElement('canvas');c.width=64;c.height=64;const x=c.getContext('2d');
+    const g=x.createRadialGradient(32,32,0,32,32,32);
+    if(kind==='head'){
+      g.addColorStop(0,'rgba(255,255,248,1)');g.addColorStop(.055,'rgba(255,255,238,1)');
+      g.addColorStop(.16,'rgba(255,245,205,.86)');g.addColorStop(.34,'rgba(255,224,160,.34)');
+      g.addColorStop(.62,'rgba(255,215,145,.08)');g.addColorStop(1,'rgba(255,215,145,0)');
+    }else if(kind==='tail'){
+      g.addColorStop(0,'rgba(255,35,24,1)');g.addColorStop(.07,'rgba(255,38,25,.98)');
+      g.addColorStop(.2,'rgba(255,42,28,.72)');g.addColorStop(.42,'rgba(255,35,25,.24)');
+      g.addColorStop(.7,'rgba(255,30,20,.05)');g.addColorStop(1,'rgba(255,30,20,0)');
+    }else{
+      g.addColorStop(0,'rgba(255,255,235,1)');g.addColorStop(.045,'rgba(255,249,215,1)');
+      g.addColorStop(.15,'rgba(255,213,145,.82)');g.addColorStop(.32,'rgba(255,169,77,.35)');
+      g.addColorStop(.62,'rgba(255,137,46,.08)');g.addColorStop(1,'rgba(255,137,46,0)');
+    }
+    x.fillStyle=g;x.fillRect(0,0,64,64);return c;
+  }
+  const lampGlowImage=makeGlowCanvas('lamp'),headGlowImage=makeGlowCanvas('head'),tailGlowImage=makeGlowCanvas('tail');
+
   state.poleCollection=scene.primitives.add(new C.PolylineCollection());
   const poleMaterial=C.Material.fromType('Color',{color:poleColor});
   state.lampPoints=scene.primitives.add(new C.PointPrimitiveCollection());
   state.lampGlows=scene.primitives.add(new C.BillboardCollection());
   state.carPoints=scene.primitives.add(new C.PointPrimitiveCollection());
-  function addLamp(route,index,side,p,z){
-    const t=tangentGeo(route,20+index*CFG.LAMP_SPACING_M),nx=-t.north*side,ny=t.east*side;
-    const edge=route.width*.5+CFG.LAMP_SIDE_MARGIN_M;
+  state.carGlows=scene.primitives.add(new C.BillboardCollection());
+  try{
+    state.bloomStage=scene.postProcessStages&&scene.postProcessStages.bloom||null;
+    if(state.bloomStage){
+      state.bloomWasEnabled=!!state.bloomStage.enabled;
+      const u=state.bloomStage.uniforms;
+      if(u){state.bloomUniformsOriginal={contrast:u.contrast,brightness:u.brightness,sigma:u.sigma,delta:u.delta,stepSize:u.stepSize};
+        u.contrast=72;u.brightness=-.08;u.sigma=2.2;u.delta=1;u.stepSize=1.15;}
+    }
+  }catch(_){}
+  function addLamp(path,index,side,p,z,d,edge){
+    const t=lampPathTangent(path,d),nx=-t.north*side,ny=t.east*side;
     const baseLL=offsetLL(p,nx*edge,ny*edge),headLL=offsetLL(baseLL,-nx*CFG.LAMP_ARM_M,-ny*CFG.LAMP_ARM_M);
-    const key=Math.round(baseLL.lon*111319.49*Math.cos(baseLL.lat*RAD)/4)+','+Math.round(baseLL.lat*110574/4)+','+Math.round(z/5);
-    if(state.lampDedup.has(key))return;
-    state.lampDedup.set(key,1);
     const base=C.Cartesian3.fromDegrees(baseLL.lon,baseLL.lat,z+.15);
     const top=C.Cartesian3.fromDegrees(baseLL.lon,baseLL.lat,z+CFG.LAMP_POLE_HEIGHT_M);
     const head=C.Cartesian3.fromDegrees(headLL.lon,headLL.lat,z+CFG.LAMP_POLE_HEIGHT_M);
-    const pole=state.poleCollection.add({positions:[base,top,head],width:1.1,material:poleMaterial,show:false});
-    const point=state.lampPoints.add({position:head,color:warm,pixelSize:CFG.LAMP_CORE_PX,outlineWidth:0,show:false,disableDepthTestDistance:0});
-    const glow=state.lampGlows.add({position:head,image:glowImage,width:CFG.LAMP_GLOW_PX,height:CFG.LAMP_GLOW_PX,color:new C.Color(1,1,1,.9),show:false,verticalOrigin:C.VerticalOrigin.CENTER,horizontalOrigin:C.HorizontalOrigin.CENTER,disableDepthTestDistance:0});
+    const pole=state.poleCollection.add({positions:[base,top,head],width:1.0,material:poleMaterial,show:false});
+    const point=state.lampPoints.add({position:head,color:warm,pixelSize:CFG.LAMP_CORE_PX,outlineWidth:1,outlineColor:new C.Color(1,.93,.72,1),show:false,disableDepthTestDistance:0});
+    const glow=state.lampGlows.add({position:head,image:lampGlowImage,width:CFG.LAMP_GLOW_PX,height:CFG.LAMP_GLOW_PX,color:new C.Color(1,1,1,1),show:false,verticalOrigin:C.VerticalOrigin.CENTER,horizontalOrigin:C.HorizontalOrigin.CENTER,scaleByDistance:new C.NearFarScalar(100,1,6000,.42),disableDepthTestDistance:0});
     const lamp={x:baseLL.lon*SX,y:baseLL.lat*SY,pole,point,glow};state.lamps.push(lamp);
   }
   function buildLampsNear(f){
     let added=0,misses=0;
-    for(const route of state.lampRoutes){
+    for(const path of state.lampPaths){
       if(state.lamps.length>=CFG.LAMP_MAX_COUNT)break;
-      for(let i=0;i<route.lampDone.length;i++){
-        if(route.lampDone[i]||route.lampAttempts[i]>=3)continue;
-        const d=20+i*CFG.LAMP_SPACING_M,p=lampRoutePoint(route,d);
+      for(let i=0;i<path.done.length;i++){
+        if(path.done[i]||path.attempts[i]>=3)continue;
+        const d=CFG.LAMP_STATION_START_M+i*CFG.LAMP_SPACING_M,samples=lampPathSamples(path,d),p=samples.center;
         if(distanceXY(f.lat,f.lon,p.lat,p.lon)>CFG.LAMP_BUILD_RADIUS_M)continue;
-        const candidates=candidateTiles(p.lon,p.lat).filter(t=>distanceXY(p.lat,p.lon,t.lat,t.lon)<=t.radius+25);
-        if(!candidates.length){route.lampAttempts[i]=3;misses++;state.stats.lampHeightMisses++;continue;}
-        if(candidates.some(t=>!t.built))continue;
-        route.lampAttempts[i]++;
-        const z=sampleRoadHeight(p.lon,p.lat,route);
-        if(!finite(z)){
-          misses++;state.stats.lampHeightMisses++;continue;
-        }
-        addLamp(route,i,1,p,z);addLamp(route,i,-1,p,z);route.lampDone[i]=1;added+=2;
+        const probes=path.paired?[samples.a,samples.b]:[samples.a];
+        const tileStates=probes.map(q=>candidateTiles(q.lon,q.lat).filter(t=>distanceXY(q.lat,q.lon,t.lat,t.lon)<=t.radius+25));
+        if(tileStates.some(a=>a.length&&a.some(t=>!t.built)))continue;
+        if(tileStates.every(a=>!a.length)){path.attempts[i]=3;misses++;state.stats.lampHeightMisses++;continue;}
+        path.attempts[i]++;
+        const z=sampleLampPathHeight(path,samples);
+        if(!finite(z)){if(path.attempts[i]>=3){misses++;state.stats.lampHeightMisses++;}continue;}
+        const key=Math.round(p.lon*111319.49*Math.cos(p.lat*RAD)/5)+','+Math.round(p.lat*110574/5)+','+Math.round(z/4);
+        if(state.lampStationDedup.has(key)){path.done[i]=1;continue;}
+        state.lampStationDedup.set(key,1);
+        addLamp(path,i,1,p,z,d,samples.edge);addLamp(path,i,-1,p,z,d,samples.edge);
+        path.done[i]=1;added+=2;
       }
     }
     state.stats.lamps=state.lamps.length;
-    if(added)console.log('[OSAKA expressway lights v2] 街灯追加:',added,'基 / 合計:',state.lamps.length);
-    if(misses)console.log('[OSAKA expressway lights v2] 道路高度未取得:',misses,'地点（地面高度での代用なし）');
+    if(added)console.log('[OSAKA expressway lights v4] 街灯追加:',added,'基 / 合計:',state.lamps.length);
+    if(misses)console.log('[OSAKA expressway lights v4] 道路高度未取得:',misses,'地点（地面高度での代用なし）');
   }
   function endpointKey(c){return Math.round(Number(c[0])*1e6)+','+Math.round(Number(c[1])*1e6);}
   function roadSignature(p){
-    return [p.highway||'',p.ref||p.name||'',p.lanes||'',p.oneway||'',p.bridge||'',p.layer||'',p.tunnel||''].join('|');
+    // OSM way splits often change bridge/layer/lanes tags; keep those out of the chain key.
+    return [p.highway||'',p.ref||p.name||p['name:ja']||''].join('|');
   }
   function mergeRoadSegments(segments){
     const nodes=new Map();
@@ -349,7 +477,9 @@
     const merged=mergeRoadSegments(segments);
     for(const f of merged){const route=makeLampRoute(f,f.coords);if(route)state.lampRoutes.push(route);}
     state.stats.roads=state.lampRoutes.length;
-    console.log('[OSAKA expressway lights v2] 街灯対象道路:',state.lampRoutes.length,'連結way（motorway / motorway_link / 有料trunkのみ）、元セグメント:',segments.length);
+    state.lampPaths=buildLampPaths(state.lampRoutes);
+    state.stats.lampPaths=state.lampPaths.length;
+    console.log('[OSAKA expressway lights v4] 街灯対象道路:',state.lampRoutes.length,'連結way / ペア化灯列:',state.lampPaths.length,'元セグメント:',segments.length);
   }
   function interpRoute(route,s){
     s=clamp(s,0,route.len);const c=route.cum;let lo=0,hi=c.length-1;
@@ -399,7 +529,7 @@
       const len=cum[cum.length-1];if(len<250)continue;
       state.routes.push({id:src.id,zoneId:src.tz,p:xyz,cum,n:src.p.length,len,groups:[],lastZ:NaN});
     }
-    console.log('[OSAKA expressway lights v2] 交通ルート:',state.routes.length,'本 / zones:',state.zoneMap.size);
+    console.log('[OSAKA expressway lights v4] 交通ルート:',state.routes.length,'本 / zones:',state.zoneMap.size);
   }
   function buildCars(){
     const factor=hourlyFactor();let id=0;
@@ -422,7 +552,7 @@
       }
     }
     state.stats.cars=state.cars.length;
-    console.log('[OSAKA expressway lights v2] 走行車両:',state.cars.length.toLocaleString(),'台（GLBなし・小さな車体点＋前白灯＋後赤灯） / 時間係数:',factor.toFixed(2));
+    console.log('[OSAKA expressway lights v4] 走行車両:',state.cars.length.toLocaleString(),'台（GLBなし・小さな車体点＋前白灯＋後赤灯） / 時間係数:',factor.toFixed(2));
   }
   function rand(a,b){return a+Math.random()*(b-a);}
   function updateMotion(dt,now){
@@ -438,14 +568,21 @@
         const leader=i===group.length-1?null:group[i+1];let target=car.targetSpeed;
         if(leader&&!leader.sleeping){const gap=leader.progress-car.progress,safe=CFG.SAFE_GAP_M+car.speed*CFG.HEADWAY_S;if(gap>0&&gap<safe)target=Math.min(target,Math.max(3,(gap-CFG.SAFE_GAP_M)/CFG.HEADWAY_S));}
         car.speed+=clamp(target-car.speed,-CFG.BRAKE_MPS2*dt,CFG.ACCEL_MPS2*dt);car.progress+=car.speed*dt;
-        if(car.progress>=car.route.len-12){car.sleeping=true;car.respawnAt=now+rand(1800,3200);if(car.body)car.body.show=false;if(car.front)car.front.show=false;if(car.rear)car.rear.show=false;resort=true;}
+        if(car.progress>=car.route.len-12){car.sleeping=true;car.respawnAt=now+rand(1800,3200);for(const q of [car.body,car.frontL,car.frontR,car.rearL,car.rearR,car.frontGlow,car.rearGlow])if(q)q.show=false;resort=true;}
       }
       if(resort)group.sort((a,b)=>a.progress-b.progress);
     }
   }
-  function pointForCar(pose,z,offsetM){
-    const e=Math.sin(pose.heading)*offsetM,n=Math.cos(pose.heading)*offsetM;
+  function pointForCar(pose,z,forwardM,sideM){
+    const h=pose.heading,e=Math.sin(h)*forwardM+Math.cos(h)*sideM,n=Math.cos(h)*forwardM-Math.sin(h)*sideM;
     return C.Cartesian3.fromDegrees(pose.lon+e/(111319.49*Math.max(.2,Math.cos(pose.lat*RAD))),pose.lat+n/110574,z);
+  }
+  function addCarGlow(image,width){
+    return state.carGlows.add({position:C.Cartesian3.ZERO,image,width,height:width,color:C.Color.WHITE,show:false,
+      verticalOrigin:C.VerticalOrigin.CENTER,horizontalOrigin:C.HorizontalOrigin.CENTER,scaleByDistance:new C.NearFarScalar(80,1,6500,.42),disableDepthTestDistance:0});
+  }
+  function setCarGlow(glow,pos,width,visible){
+    glow.position=pos;glow.width=width;glow.height=width;glow.show=visible;
   }
   function updateCars(now,dt,f){
     const limit2=CFG.CAR_VISIBLE_RADIUS_M*CFG.CAR_VISIBLE_RADIUS_M,night=state.nightFactor>.025,alpha=clamp(dt/(CFG.CAR_UPDATE_MS/1000),0,1);
@@ -453,49 +590,79 @@
       if(car.sleeping)continue;
       const progress=car.prevProgress+(car.progress-car.prevProgress)*alpha,pose=trafficPose(car,progress);
       const dx=(pose.lon-f.lon)*SX,dy=(pose.lat-f.lat)*SY,d2=dx*dx+dy*dy;
-      if(d2>limit2){if(car.body)car.body.show=false;if(car.front)car.front.show=false;if(car.rear)car.rear.show=false;continue;}
+      if(d2>limit2){
+        for(const q of [car.body,car.frontL,car.frontR,car.rearL,car.rearR])if(q)q.show=false;
+        for(const q of [car.frontGlow,car.rearGlow])if(q)q.show=false;
+        continue;
+      }
       if(now-car.lastHeightAt>=CFG.CAR_HEIGHT_REFRESH_MS){
         car.lastHeightAt=now;
         const z=sampleRoadHeight(pose.lon,pose.lat,car.route,car.height);
         car.height=finite(z)?z:(finite(pose.alt)?pose.alt:NaN);
       }
-      if(!finite(car.height)){if(car.body)car.body.show=false;if(car.front)car.front.show=false;if(car.rear)car.rear.show=false;continue;}
-      const d=Math.sqrt(d2),near=d<1800,bodyPx=near?CFG.CAR_BODY_PX_NEAR:.85,lightPx=near?CFG.CAR_LIGHT_PX_NEAR:CFG.CAR_LIGHT_PX_FAR;
-      const center=C.Cartesian3.fromDegrees(pose.lon,pose.lat,car.height+CFG.CAR_LIGHT_HEIGHT_M);
-      const front=pointForCar(pose,car.height+CFG.CAR_LIGHT_HEIGHT_M,CFG.CAR_FRONT_M);
-      const rear=pointForCar(pose,car.height+CFG.CAR_LIGHT_HEIGHT_M,-CFG.CAR_REAR_M);
-      if(!car.body)car.body=state.carPoints.add({position:center,color:bodyColor,pixelSize:bodyPx,outlineWidth:0,show:true,disableDepthTestDistance:0});
-      else{car.body.position=center;car.body.pixelSize=bodyPx;car.body.show=true;}
-      if(!car.front)car.front=state.carPoints.add({position:front,color:white,pixelSize:lightPx,outlineWidth:0,show:night,disableDepthTestDistance:0});
-      else{car.front.position=front;car.front.pixelSize=lightPx;car.front.show=night;}
-      if(!car.rear)car.rear=state.carPoints.add({position:rear,color:red,pixelSize:lightPx,outlineWidth:0,show:night,disableDepthTestDistance:0});
-      else{car.rear.position=rear;car.rear.pixelSize=lightPx;car.rear.show=night;}
+      if(!finite(car.height)){
+        for(const q of [car.body,car.frontL,car.frontR,car.rearL,car.rearR])if(q)q.show=false;
+        for(const q of [car.frontGlow,car.rearGlow])if(q)q.show=false;
+        continue;
+      }
+      const d=Math.sqrt(d2),near=d<1800,bodyPx=near?CFG.CAR_BODY_PX_NEAR:CFG.CAR_BODY_PX_FAR;
+      const pointPx=near?CFG.CAR_LIGHT_PX_NEAR:CFG.CAR_LIGHT_PX_FAR;
+      const headGlowPx=near?CFG.CAR_HEAD_GLOW_PX_NEAR:CFG.CAR_HEAD_GLOW_PX_FAR;
+      const tailGlowPx=near?CFG.CAR_TAIL_GLOW_PX_NEAR:CFG.CAR_TAIL_GLOW_PX_FAR;
+      const z=car.height+CFG.CAR_LIGHT_HEIGHT_M;
+      const center=C.Cartesian3.fromDegrees(pose.lon,pose.lat,z);
+      const fl=pointForCar(pose,z,CFG.CAR_FRONT_M,-CFG.CAR_SIDE_M),fr=pointForCar(pose,z,CFG.CAR_FRONT_M,CFG.CAR_SIDE_M);
+      const rl=pointForCar(pose,z,-CFG.CAR_REAR_M,-CFG.CAR_SIDE_M),rr=pointForCar(pose,z,-CFG.CAR_REAR_M,CFG.CAR_SIDE_M);
+      const fg=pointForCar(pose,z,CFG.CAR_FRONT_M+.25,0),rg=pointForCar(pose,z,-CFG.CAR_REAR_M-.2,0);
+      const ensurePoint=(key,pos,color,size,visible)=>{
+        if(!car[key])car[key]=state.carPoints.add({position:pos,color,pixelSize:size,outlineWidth:0,show:visible,disableDepthTestDistance:0});
+        else{car[key].position=pos;car[key].color=color;car[key].pixelSize=size;car[key].show=visible;}
+      };
+      ensurePoint('body',center,bodyColor,bodyPx,true);
+      ensurePoint('frontL',fl,white,pointPx,night);ensurePoint('frontR',fr,white,pointPx,night);
+      ensurePoint('rearL',rl,red,pointPx,night);ensurePoint('rearR',rr,red,pointPx,night);
+      if(!car.frontGlow)car.frontGlow=addCarGlow(headGlowImage,headGlowPx);
+      if(!car.rearGlow)car.rearGlow=addCarGlow(tailGlowImage,tailGlowPx);
+      setCarGlow(car.frontGlow,fg,headGlowPx,night);setCarGlow(car.rearGlow,rg,tailGlowPx,night);
     }
   }
   function refreshLampVisibility(f){
     const r2=CFG.LAMP_VISIBLE_RADIUS_M*CFG.LAMP_VISIBLE_RADIUS_M,night=state.nightFactor>.025;
     for(const l of state.lamps){const dx=l.x-f.x,dy=l.y-f.y,show=dx*dx+dy*dy<=r2;
       l.pole.show=show;l.point.show=show&&night;l.glow.show=show&&night;
-      if(l.glow&&l.glow.color)l.glow.color=new C.Color(1,1,1,.48+.45*state.nightFactor);
+      if(l.glow&&l.glow.color)l.glow.color=new C.Color(1,1,1,.92+.08*state.nightFactor);
     }
   }
   function hideAll(){
     for(const l of state.lamps){l.pole.show=false;l.point.show=false;l.glow.show=false;}
-    for(const c of state.cars){if(c.body)c.body.show=false;if(c.front)c.front.show=false;if(c.rear)c.rear.show=false;}
+    for(const c of state.cars){for(const q of [c.body,c.frontL,c.frontR,c.rearL,c.rearR,c.front,c.rear,c.frontGlow,c.rearGlow])if(q)q.show=false;}
   }
+  state.setNightMode=(mode)=>{
+    state.forceNight=mode===null?null:mode===true?true:mode===false?false:clamp(Number(mode)||0,0,1);
+    state.lastNight=0;
+    const f=focus();if(f){updateNight(performance.now(),f);refreshLampVisibility(f);updateCars(performance.now(),CFG.CAR_UPDATE_MS/1000,f);}
+    return state.nightFactor;
+  };
   state.stop=()=>{
     if(!state.active)return;state.active=false;
     try{if(g.api.removeFrameCallback&&state.callback)g.api.removeFrameCallback(state.callback);else if(scene.preRender&&state.callback)scene.preRender.removeEventListener(state.callback);}catch(_){}
     hideAll();
-    for(const p of [state.poleCollection,state.lampPoints,state.lampGlows,state.carPoints])try{if(p)scene.primitives.remove(p);}catch(_){}
-    state.tileQueue.length=0;state.lamps.length=0;state.cars.length=0;state.groups.length=0;state.tiles.length=0;state.buffer=null;
+    try{
+      if(state.bloomStage){
+        state.bloomStage.enabled=state.bloomWasEnabled;
+        const u=state.bloomStage.uniforms,o=state.bloomUniformsOriginal;
+        if(u&&o){for(const k of Object.keys(o))u[k]=o[k];}
+      }
+    }catch(_){}
+    for(const p of [state.poleCollection,state.lampPoints,state.lampGlows,state.carPoints,state.carGlows])try{if(p)scene.primitives.remove(p);}catch(_){}
+    state.tileQueue.length=0;state.lamps.length=0;state.lampPaths.length=0;state.cars.length=0;state.groups.length=0;state.tiles.length=0;state.buffer=null;
     if(window.__osakaExpresswayNightTraffic===state)window.__osakaExpresswayNightTraffic=null;
-    console.log('[OSAKA expressway lights v2] 停止しました');
+    console.log('[OSAKA expressway lights v4] 停止しました');
   };
 
   try{
     const f=focus();if(!f)throw Error('航空機位置が取得できません');
-    console.log('[OSAKA expressway lights v2] データ読み込み中...');
+    console.log('[OSAKA expressway lights v4] データ読み込み中...');
     await Promise.all([loadCollision(),loadRoads(),loadTraffic()]);if(!state.active)return;
     queueNearbyTiles(f);
     while(state.tilePump||state.tileQueue.length){await sleep(100);if(!state.active)return;}
@@ -512,6 +679,7 @@
     };
     if(g.api.addFrameCallback)g.api.addFrameCallback(state.callback);else if(scene.preRender&&scene.preRender.addEventListener)scene.preRender.addEventListener(state.callback);else throw Error('frame callback APIなし');
     refreshLampVisibility(f);state.callback();
-    console.log('[OSAKA expressway lights v2] 起動完了:',{roads:state.stats.roads,streetLamps:state.stats.lamps,cars:state.stats.cars,collisionTiles:state.stats.tilesBuilt,triangles:state.stats.triangles,streetLampSpacing:CFG.LAMP_SPACING_M,lightHeightAboveRoad:CFG.LAMP_POLE_HEIGHT_M,vehicleModels:false,nightFactor:state.nightFactor});
-  }catch(e){console.error('[OSAKA expressway lights v2] 起動失敗:',e);state.stop();}
-})().catch(e=>console.error('[OSAKA expressway lights v2] fatal:',e));
+    console.log('[OSAKA expressway lights v4] 夜間表示テスト: window.__osakaExpresswayNightTraffic.setNightMode(true) / 自動に戻す: setNightMode(null)');
+    console.log('[OSAKA expressway lights v4] 起動完了:',{roads:state.stats.roads,streetLamps:state.stats.lamps,cars:state.stats.cars,collisionTiles:state.stats.tilesBuilt,triangles:state.stats.triangles,streetLampSpacing:CFG.LAMP_SPACING_M,pairedCarriagewayGroups:state.lampPaths.filter(x=>x.paired).length,lightHeightAboveRoad:CFG.LAMP_POLE_HEIGHT_M,vehicleModels:false,nightFactor:state.nightFactor});
+  }catch(e){console.error('[OSAKA expressway lights v4] 起動失敗:',e);state.stop();}
+})().catch(e=>console.error('[OSAKA expressway lights v4] fatal:',e));
