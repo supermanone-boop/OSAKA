@@ -1,0 +1,7 @@
+Osaka PLATEAU facade PBR maps
+
+roughness_atlas.png: per-material roughness with high-frequency variation derived from surface albedo.
+metalness_atlas.png: physically plausible metalness by facade family (glass low, dark metal high, mineral materials near zero).
+normal_atlas.png: tangent-space micro-normal map derived from surface texture luminance gradients.
+
+Each atlas is 1584x1056 RGBA, 3 columns x 2 rows, 512x512 material cells with 8px edge gutters.

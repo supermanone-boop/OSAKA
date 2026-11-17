@@ -1,0 +1,77 @@
+{
+  "layout": "3 columns x 2 rows",
+  "cell_px": 512,
+  "gutter_px": 8,
+  "atlas_px": [
+    1584,
+    1056
+  ],
+  "materials": [
+    {
+      "index": 0,
+      "id": "01_cream_tile",
+      "name": "cream ceramic tile",
+      "file": "01_cream_tile.jpg",
+      "pbr_defaults": {
+        "roughness": 0.84,
+        "metalness": 0.02
+      }
+    },
+    {
+      "index": 1,
+      "id": "02_cast_concrete",
+      "name": "cast-in-place concrete",
+      "file": "02_cast_concrete.jpg",
+      "pbr_defaults": {
+        "roughness": 0.93,
+        "metalness": 0.0
+      }
+    },
+    {
+      "index": 2,
+      "id": "03_blue_glass",
+      "name": "blue-grey curtain wall glass",
+      "file": "03_blue_glass.jpg",
+      "pbr_defaults": {
+        "roughness": 0.16,
+        "metalness": 0.06
+      }
+    },
+    {
+      "index": 3,
+      "id": "04_red_brick",
+      "name": "weathered red-brown brick",
+      "file": "04_red_brick.jpg",
+      "pbr_defaults": {
+        "roughness": 0.88,
+        "metalness": 0.01
+      }
+    },
+    {
+      "index": 4,
+      "id": "05_dark_metal",
+      "name": "dark ribbed metal cladding",
+      "file": "05_dark_metal.jpg",
+      "pbr_defaults": {
+        "roughness": 0.48,
+        "metalness": 0.68
+      }
+    },
+    {
+      "index": 5,
+      "id": "06_beige_stone",
+      "name": "beige stone panels",
+      "file": "06_beige_stone.jpg",
+      "pbr_defaults": {
+        "roughness": 0.72,
+        "metalness": 0.025
+      }
+    }
+  ],
+  "pbr_maps": {
+    "albedo": "facade_atlas.jpg",
+    "roughness": "roughness_atlas.png",
+    "metalness": "metalness_atlas.png",
+    "normal": "normal_atlas.png"
+  }
+}
