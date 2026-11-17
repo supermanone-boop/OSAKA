@@ -1,6 +1,6 @@
 (()=>{
 'use strict';
-const KEY='__OSAKA_REALISM_BETA_V5_136__';
+const KEY='__OSAKA_REALISM_BETA_V5_136_1__';
 try{window.__OSAKA_REALISM_BETA_V4__?.stop?.();}catch(_){}
 if(window[KEY]?.stop)window[KEY].stop();
 const C=window.Cesium,G=window.geofs,V=G?.api?.viewer;
@@ -8,32 +8,33 @@ const SC=V?.scene;
 const MIN_VERSION=136;
 const parseVersion=s=>{const m=String(s||'').match(/^(\d+)\.(\d+)/);return m?{major:+m[1],minor:+m[2]}:{major:0,minor:0};};
 const ver=parseVersion(C?.VERSION);
-if(!C||!G||!V||!SC){console.error('[OSAKA beta v5.136] GeoFS/Cesium viewerが見つかりません');return;}
+if(!C||!G||!V||!SC){console.error('[OSAKA beta v5.136.1] GeoFS/Cesium viewerが見つかりません');return;}
 if(ver.major<1||(ver.major===1&&ver.minor<MIN_VERSION)){
- console.error(`[OSAKA beta v5.136] CesiumJS 1.136+ が必要です。現在: ${C.VERSION||'version unknown'}。既に起動したGeoFS viewerのCesiumを後から差し替えることはできません。beta側のviewer自体を新しいCesiumで起動してください。`);
+ console.error(`[OSAKA beta v5.136.1] CesiumJS 1.136+ が必要です。現在: ${C.VERSION||'version unknown'}。既に起動したGeoFS viewerのCesiumを後から差し替えることはできません。beta側のviewer自体を新しいCesiumで起動してください。`);
  return;
 }
-if(!C.CustomShader||!C.CustomShaderMode?.MODIFY_MATERIAL||!C.LightingModel?.PBR||!C.UniformType?.SAMPLER_2D||!C.TextureUniform||!C.Model?.fromGltfAsync||!C.Cesium3DTileset?.fromUrl||!C.PostProcessStageLibrary){console.error('[OSAKA beta v5.136] CesiumJS 1.136に必要な公開APIが不足しています。VERSIONとビルド構成を確認してください');return;}
+if(!C.CustomShader||!C.CustomShaderMode?.MODIFY_MATERIAL||!C.LightingModel?.PBR||!C.Model?.fromGltfAsync||!C.Cesium3DTileset?.fromUrl||!C.PostProcessStageLibrary){console.error('[OSAKA beta v5.136.1] CesiumJS 1.136に必要な公開APIが不足しています。VERSIONとビルド構成を確認してください');return;}
 const REPO='supermanone-boop/OSAKA',BRANCH='main';
 const RAW=`https://raw.githubusercontent.com/${REPO}/${BRANCH}/`;
 const TREE=`https://api.github.com/repos/${REPO}/git/trees/${BRANCH}?recursive=1`;
 const PLATEAU='https://api.plateauview.mlit.go.jp/datacatalog/3dtiles/';
 const AREA='27';
-const ROOT='super/plateau_facades/';
-const ATLAS_W=1584,ATLAS_H=1056,LIGHTS=16;
+const LIGHTS=16;
 const EXPRESSWAY={path:'Osaka_Expressways_Realistic_v4.glb.gz',url:'https://huggingface.co/supermanone-boop/OSAKA/resolve/main/Osaka_Expressways_Realistic_v4.glb.gz',lon:135.51052305,lat:34.74052680,alt:0};
-const S={active:false,stopped:false,generation:0,tiles:[],models:[],shaders:[],blobUrls:[],tileListeners:[],lampData:[],lampEntities:[],glowEntities:[],pointCollection:null,postStages:[],preUpdate:null,mouseHandler:null,placing:false,tree:null,treeAt:0,loaded:{buildings:0,roads:0,rails:0},failed:[],pbr:null,glowCanvas:null,sceneOriginal:null,loads:new Set(),lastLampCenter:null,lastLampFetch:0,activeLampSet:[],lastLampSelectionAt:0};
+const S={active:false,stopped:false,generation:0,tiles:[],models:[],shaders:[],blobUrls:[],tileListeners:[],lampData:[],lampEntities:[],glowEntities:[],pointCollection:null,postStages:[],preUpdate:null,mouseHandler:null,placing:false,tree:null,treeAt:0,loaded:{buildings:0,roads:0,rails:0},failed:[],sceneOriginal:null,loads:new Set(),lastLampCenter:null,lastLampFetch:0,activeLampSet:[],lastLampSelectionAt:0};
 const css=`#osakaBeta5{position:fixed;z-index:999999;left:10px;top:82px;width:286px;max-height:78vh;overflow:auto;background:rgba(12,19,26,.97);color:#edf5fa;border:1px solid #657985;border-radius:9px;padding:10px;font:13px/1.45 Arial,sans-serif;box-shadow:0 5px 24px #000b}#osakaBeta5 *{box-sizing:border-box}#osakaBeta5 header{display:flex;align-items:center;justify-content:space-between;font-weight:700;margin-bottom:7px}#osakaBeta5 button{background:#344d5c;color:#fff;border:1px solid #8299a6;border-radius:5px;padding:6px 8px;font-size:12px}#osakaBeta5 label{display:flex;align-items:center;gap:7px;margin:7px 0}#osakaBeta5 input[type=checkbox]{accent-color:#e5b86d}#osakaBeta5 input[type=range],#osakaBeta5 select{width:100%}#osakaBeta5 select{background:#1d2d37;color:#fff;border:1px solid #667e8c;border-radius:5px;padding:6px;margin:4px 0 7px}#osakaBeta5 .small{font-size:11px;color:#b9c9d1}#osakaBeta5 .row{display:flex;gap:6px;align-items:center}#osakaBeta5 .row button{flex:1}#osakaBeta5 .rangeLine{display:block;margin-top:7px}#osakaBeta5 .rangeLine span{display:flex;justify-content:space-between}#osakaBeta5 #ob5Status{margin-top:8px;min-height:38px;overflow-wrap:anywhere;color:#d4e9f4}#osakaBetaReopen5{position:fixed;z-index:999999;left:10px;top:82px;display:none;background:#202c34;color:#fff;border:1px solid #8299a6;border-radius:6px;padding:7px 10px;font:12px Arial}`;
 ['osakaBeta4','osakaBetaReopen4','osakaBeta4Style','osakaBeta5','osakaBetaReopen5','osakaBeta5Style'].forEach(id=>document.getElementById(id)?.remove());
 const style=document.createElement('style');style.id='osakaBeta5Style';style.textContent=css;document.head.appendChild(style);
 const panel=document.createElement('div');panel.id='osakaBeta5';
-panel.innerHTML=`<header><span>OSAKA Realism BETA v5.136</span><button id="ob5Close">×</button></header>
-<div class="small">CesiumJS ${C.VERSION} / PLATEAU建物 + OSAKA道路・線路</div>
+panel.innerHTML=`<header><span>OSAKA Realism BETA v5.136.1</span><button id="ob5Close">×</button></header>
+<div class="small">CesiumJS ${C.VERSION} / Sampler-free Procedural PBR</div>
 <label><input type="checkbox" id="ob5Buildings" checked>PLATEAU建物（大阪府）</label>
 <select id="ob5Lod"><option value="maxlod3">LOD3優先（公開LODで補完）</option><option value="lod3">LOD3のみ</option></select>
-<label><input type="checkbox" id="ob5Roads" checked>OSAKA高速道路GLB</label>
-<label><input type="checkbox" id="ob5Rails" checked>OSAKA鉄道・線路GLB</label>
-<label><input type="checkbox" id="ob5Lamps" checked>街灯＋周囲への局所照明</label>
+<label><input type="checkbox" id="ob5Roads">OSAKA高速道路GLB</label>
+<label><input type="checkbox" id="ob5Rails">OSAKA鉄道・線路GLB</label>
+<label><input type="checkbox" id="ob5Lamps">街灯＋周囲への局所照明</label>
+<label><input type="checkbox" id="ob5Bloom">ブルーム（任意・描画負荷あり）</label>
+<label><input type="checkbox" id="ob5AO">SSAO（任意・描画負荷あり）</label>
 <div class="small">点灯モード</div><select id="ob5Mode"><option value="on">常時点灯（表示テスト向け）</option><option value="auto">昼夜自動</option><option value="off">消灯</option></select>
 <label class="rangeLine"><span><b>照明強度</b><span id="ob5PowerVal">1.8×</span></span><input id="ob5Power" type="range" min="0.3" max="3.5" value="1.8" step="0.1"></label>
 <label class="rangeLine"><span><b>照明半径</b><span id="ob5RadiusVal">42 m</span></span><input id="ob5Radius" type="range" min="18" max="85" value="42" step="1"></label>
@@ -41,12 +42,12 @@ panel.innerHTML=`<header><span>OSAKA Realism BETA v5.136</span><button id="ob5Cl
 <div class="row" style="margin-top:9px"><button id="ob5Start">大阪を読み込む</button><button id="ob5Stop">停止・削除</button></div>
 <div class="row" style="margin-top:6px"><button id="ob5Place">タップで照明を追加</button></div>
 <div id="ob5Status">待機中</div>
-<div class="small">街灯位置：OpenStreetMapのstreet_lampノード。局所照明：PLATEAU建物とOSAKA GLBのPBR面。地面には光だまりを描画します。</div>`;
+<div class="small">街灯・高速道路・線路は最初OFF。建物のみで起動確認後、停止して機能を1つずつ追加してください。局所照明はSamplerを使わず材質へ計算加算します。</div>`;
 document.body.appendChild(panel);
 const reopen=document.createElement('button');reopen.id='osakaBetaReopen5';reopen.textContent='OSAKA BETA';document.body.appendChild(reopen);
 const $=id=>document.getElementById(id);
-const ui={buildings:$('ob5Buildings'),lod:$('ob5Lod'),roads:$('ob5Roads'),rails:$('ob5Rails'),lamps:$('ob5Lamps'),mode:$('ob5Mode'),power:$('ob5Power'),radius:$('ob5Radius'),budget:$('ob5Budget'),status:$('ob5Status')};
-const say=t=>{ui.status.textContent=t;console.log('[OSAKA beta v5.136]',t);};
+const ui={buildings:$('ob5Buildings'),lod:$('ob5Lod'),roads:$('ob5Roads'),rails:$('ob5Rails'),lamps:$('ob5Lamps'),bloom:$('ob5Bloom'),ao:$('ob5AO'),mode:$('ob5Mode'),power:$('ob5Power'),radius:$('ob5Radius'),budget:$('ob5Budget'),status:$('ob5Status')};
+const say=t=>{ui.status.textContent=t;console.log('[OSAKA beta v5.136.1]',t);};
 $('ob5Close').onclick=()=>{panel.style.display='none';reopen.style.display='block';};
 reopen.onclick=()=>{panel.style.display='block';reopen.style.display='none';};
 ui.power.addEventListener('input',()=>{$('ob5PowerVal').textContent=Number(ui.power.value).toFixed(1)+'×';requestRender();});
@@ -59,33 +60,8 @@ function rad(x){return x*Math.PI/180;}
 function haversine(a,b){const R=6371000,dl=rad(b.lat-a.lat),dn=rad(b.lon-a.lon),q=Math.sin(dl/2)**2+Math.cos(rad(a.lat))*Math.cos(rad(b.lat))*Math.sin(dn/2)**2;return 2*R*Math.asin(Math.sqrt(q));}
 function inOsaka(o){return o&&o.lon>134.65&&o.lon<136.25&&o.lat>34.15&&o.lat<35.25;}
 function plateauUrl(lod){return `${PLATEAU}${AREA}-bldg-${lod}-latest/tileset.json`;}
-function toGlTexture(image){
- const canvas=document.createElement('canvas');canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;
- const ctx=canvas.getContext('2d',{willReadFrequently:true});if(!ctx)throw new Error('PBRテクスチャCanvasを初期化できません');
- ctx.drawImage(image,0,0);const src=ctx.getImageData(0,0,canvas.width,canvas.height).data;
- const out=new Uint8Array(src.length),stride=canvas.width*4;
- for(let y=0;y<canvas.height;y++)out.set(src.subarray(y*stride,(y+1)*stride),(canvas.height-1-y)*stride);
- return new C.TextureUniform({typedArray:out,width:canvas.width,height:canvas.height,pixelFormat:C.PixelFormat.RGBA,pixelDatatype:C.PixelDatatype.UNSIGNED_BYTE,repeat:false,minificationFilter:C.TextureMinificationFilter.LINEAR,magnificationFilter:C.TextureMagnificationFilter.LINEAR,maximumAnisotropy:8});
-}
-async function loadPbrMaps(){
- if(S.pbr)return S.pbr;
- const names=['facade_atlas.jpg','roughness_atlas.png','metalness_atlas.png','normal_atlas.png'];
- const keys=['albedo','roughness','metalness','normal'];const out={};
- for(let i=0;i<names.length;i++){
-  const img=await new Promise((resolve,reject)=>{const im=new Image();im.crossOrigin='anonymous';im.onload=()=>resolve(im);im.onerror=()=>reject(new Error(names[i]+' の取得に失敗。GitHub配置先を確認してください'));im.src=RAW+ROOT+names[i]+'?v=5.136';});
-  if(img.naturalWidth!==ATLAS_W||img.naturalHeight!==ATLAS_H)throw new Error(`${names[i]} 寸法が不一致: ${img.naturalWidth}x${img.naturalHeight}`);
-  out[keys[i]]=toGlTexture(img);
- }
- S.pbr=out;return out;
-}
 function makeUniforms(withFacade,kind){
  const U=C.UniformType,u={};
- if(withFacade){
-  u.uFacadeAtlas={type:U.SAMPLER_2D,value:S.pbr.albedo};
-  u.uRoughAtlas={type:U.SAMPLER_2D,value:S.pbr.roughness};
-  u.uMetalAtlas={type:U.SAMPLER_2D,value:S.pbr.metalness};
-  u.uNormalAtlas={type:U.SAMPLER_2D,value:S.pbr.normal};
- }
  u.uNightFactor={type:U.FLOAT,value:1.0};
  u.uSurfaceKind={type:U.FLOAT,value:kind==='roads'?1.0:(kind==='rails'?2.0:0.0)};
  for(let i=0;i<LIGHTS;i++){
@@ -140,53 +116,67 @@ function facadeShaderBody(){return `
   float lo=min(base.r,min(base.g,base.b));
   float hi=max(base.r,max(base.g,base.b));
   float chroma=hi-lo;
-  float whiteMask=smoothstep(0.64,0.84,lo)*(1.0-smoothstep(0.065,0.19,chroma));
-  // Avoid depending on optional featureId fields: PLATEAU tiles may mix B3DM and GLB content.
-  // A coarse model-space cell hash assigns a stable facade family without changing feature geometry.
-  vec3 facadeCell=floor(vFacadePosMC/vec3(48.0));
-  float materialId=mod(abs(dot(facadeCell,vec3(1.0,3.0,5.0))),6.0);
-  vec3 nmc=abs(normalize(vFacadeNormalMC));
+  float whiteMask=smoothstep(0.56,0.82,lo)*(1.0-smoothstep(0.055,0.20,chroma));
+  vec3 cell=floor(vFacadePosMC/vec3(47.0));
+  float materialId=mod(abs(dot(cell,vec3(1.0,3.0,5.0))),6.0);
+  vec3 nn=abs(normalize(vFacadeNormalMC));
   vec2 uv;
-  if(nmc.y>=nmc.x && nmc.y>=nmc.z) uv=vFacadePosMC.xz;
-  else if(nmc.x>=nmc.z) uv=vFacadePosMC.zy;
+  if(nn.y>=nn.x && nn.y>=nn.z) uv=vFacadePosMC.xz;
+  else if(nn.x>=nn.z) uv=vFacadePosMC.zy;
   else uv=vFacadePosMC.xy;
-  float tileScale=0.25;
-  if(materialId<0.5) tileScale=0.65;
-  else if(materialId<1.5) tileScale=0.22;
-  else if(materialId<2.5) tileScale=0.35;
-  else if(materialId<3.5) tileScale=0.42;
-  else if(materialId<4.5) tileScale=0.24;
-  else tileScale=0.32;
-  vec2 cellUV=fract(uv*tileScale);
-  float col=mod(materialId,3.0);
-  float rowFromBottom=1.0-floor(materialId/3.0);
-  vec2 atlasUV=(vec2(col,rowFromBottom)*528.0+vec2(8.0)+cellUV*512.0)/vec2(1584.0,1056.0);
-  vec3 albedoSRGB=texture(uFacadeAtlas,atlasUV).rgb;
-  vec3 albedo=pow(max(albedoSRGB,vec3(0.001)),vec3(2.2));
-  float rough=texture(uRoughAtlas,atlasUV).r;
-  float metal=texture(uMetalAtlas,atlasUV).r;
-  vec3 mapN=normalize(texture(uNormalAtlas,atlasUV).xyz*2.0-1.0);
-  vec3 dPdx=dFdx(fsInput.attributes.positionEC);
-  vec3 dPdy=dFdy(fsInput.attributes.positionEC);
-  vec2 dUVdx=dFdx(uv);
-  vec2 dUVdy=dFdy(uv);
-  float uvDet=dUVdx.x*dUVdy.y-dUVdx.y*dUVdy.x;
-  if(abs(uvDet)>0.000001){
-   vec3 T=dPdx*dUVdy.y-dPdy*dUVdx.y;
-   vec3 B=-dPdx*dUVdy.x+dPdy*dUVdx.x;
-   T=normalize(T-N*dot(N,T));
-   vec3 Baxis=normalize(cross(N,T));
-   float handed=sign(dot(Baxis,B));
-   vec3 Bfinal=Baxis*(handed==0.0?1.0:handed);
-   vec3 detailNormal=normalize(T*mapN.x+Bfinal*mapN.y+N*mapN.z);
-   material.normalEC=normalize(mix(N,detailNormal,whiteMask*0.72));
+  vec3 facade=vec3(0.66,0.64,0.59);
+  float rough=0.78;
+  float metal=0.0;
+  float relief=0.0;
+  if(materialId<0.5){
+   vec2 q=uv*0.72; vec2 f=fract(q); vec2 id=floor(q);
+   float grout=1.0-smoothstep(0.018,0.045,min(min(f.x,1.0-f.x),min(f.y,1.0-f.y)));
+   float v=fract(sin(dot(id,vec2(12.9898,78.233)))*43758.5453);
+   facade=mix(vec3(0.70,0.68,0.62),vec3(0.84,0.81,0.74),v*0.28);
+   facade*=1.0-grout*0.34; rough=0.48+v*0.13; relief=grout*0.10;
+  }else if(materialId<1.5){
+   vec2 q=uv*0.20; vec2 f=fract(q); vec2 id=floor(q);
+   float n=fract(sin(dot(floor(uv*5.0),vec2(37.1,91.7)))*143758.5453);
+   float seam=1.0-smoothstep(0.006,0.018,min(min(f.x,1.0-f.x),min(f.y,1.0-f.y)));
+   float stain=0.94+0.08*n;
+   facade=vec3(0.48,0.49,0.47)*stain*(1.0-seam*0.12);
+   rough=0.91; relief=(n-0.5)*0.055-seam*0.04;
+  }else if(materialId<2.5){
+   vec2 q=uv*0.34; vec2 f=fract(q); vec2 id=floor(q);
+   float mullion=1.0-smoothstep(0.012,0.035,min(min(f.x,1.0-f.x),min(f.y,1.0-f.y)));
+   float variation=fract(sin(dot(id,vec2(17.17,41.31)))*16731.17);
+   float fres=pow(1.0-max(dot(normalize(vFacadeNormalMC),normalize(vec3(0.3,0.8,0.5))),0.0),4.0);
+   facade=mix(vec3(0.075,0.15,0.22),vec3(0.19,0.29,0.37),variation*0.52+fres*0.35);
+   facade=mix(facade,vec3(0.025,0.035,0.045),mullion*0.92);
+   rough=0.19+variation*0.09; metal=0.18; relief=mullion*0.025;
+  }else if(materialId<3.5){
+   vec2 q=uv*0.34; vec2 row=floor(q); vec2 f=fract(q); f.x=fract(q.x+mod(row.y,2.0)*0.5);
+   float mortar=1.0-smoothstep(0.018,0.042,min(min(f.x,1.0-f.x),min(f.y,1.0-f.y)));
+   float v=fract(sin(dot(row,vec2(27.1,61.7)))*43758.5453);
+   facade=mix(vec3(0.25,0.095,0.055),vec3(0.43,0.19,0.105),v*0.72);
+   facade*=1.0-mortar*0.48; rough=0.84; relief=mortar*0.09+(v-0.5)*0.02;
+  }else if(materialId<4.5){
+   float ribs=0.5+0.5*cos(uv.x*5.6*6.2831853);
+   float groove=smoothstep(0.78,0.96,ribs);
+   float v=fract(sin(dot(floor(uv*vec2(0.2,0.7)),vec2(19.19,73.73)))*9182.17);
+   facade=mix(vec3(0.075,0.083,0.09),vec3(0.19,0.20,0.205),groove*0.72);
+   facade*=0.95+v*0.07; rough=0.34; metal=0.68; relief=(groove-0.5)*0.10;
+  }else{
+   vec2 q=uv*0.27; vec2 f=fract(q); vec2 id=floor(q);
+   float seam=1.0-smoothstep(0.012,0.032,min(min(f.x,1.0-f.x),min(f.y,1.0-f.y)));
+   float v=fract(sin(dot(id,vec2(31.4,17.8)))*21931.73);
+   float fleck=fract(sin(dot(floor(uv*vec2(5.0,8.0)),vec2(17.3,59.1)))*7141.1);
+   facade=mix(vec3(0.48,0.43,0.35),vec3(0.68,0.61,0.50),v*0.65+fleck*0.12);
+   facade*=1.0-seam*0.25; rough=0.73; relief=seam*0.065+(fleck-0.5)*0.015;
   }
-  material.diffuse=mix(base,albedo,whiteMask);
-  material.roughness=mix(material.roughness,clamp(rough,0.08,0.98),whiteMask);
-  // Cesium 1.136's czm_modelMaterial exposes specular, not metallic.
-  // Convert the atlas metalness to a physically plausible dielectric/metal F0.
-  vec3 facadeF0=mix(vec3(0.04),albedo,clamp(metal,0.0,0.92));
-  material.specular=mix(material.specular,facadeF0,whiteMask);
+  float micro=fract(sin(dot(floor(uv*vec2(31.0,47.0)),vec2(12.9898,78.233)))*43758.5453);
+  facade*=0.975+micro*0.05;
+  material.diffuse=mix(base,facade,whiteMask);
+  material.roughness=mix(material.roughness,rough,whiteMask);
+  vec3 f0=mix(vec3(0.04),facade,metal);
+  material.specular=mix(material.specular,f0,whiteMask);
+  vec3 bump=vec3(dFdx(relief),dFdy(relief),0.0);
+  material.normalEC=normalize(material.normalEC+vec3(bump.xy*whiteMask*0.22,0.0));
  `;}
 function ownSurfaceShaderBody(){return `
   if(uSurfaceKind>0.5 && uSurfaceKind<1.5){
@@ -232,12 +222,18 @@ function saveSceneSettings(){
  try{SC.shadows=true;}catch(_){}
  try{if(SC.globe){SC.globe.enableLighting=true;SC.globe.showGroundAtmosphere=true;}}catch(_){}
  try{if(sm){sm.enabled=true;sm.softShadows=true;sm.size=2048;sm.maximumDistance=7000;sm.darkness=0.38;}}catch(_){}
- const lib=C.PostProcessStageLibrary;
- try{if(typeof lib?.createBloomStage==='function'){const b=lib.createBloomStage();b.enabled=true;SC.postProcessStages.add(b);S.postStages.push(b);}}catch(e){console.warn('[OSAKA beta v5.136] bloom stage',e);}
- try{if(typeof lib?.createAmbientOcclusionStage==='function'&&typeof lib.isAmbientOcclusionSupported==='function'&&lib.isAmbientOcclusionSupported(SC)){const ao=lib.createAmbientOcclusionStage();ao.enabled=true;SC.postProcessStages.add(ao);S.postStages.push(ao);}}catch(e){console.warn('[OSAKA beta v5.136] AO stage',e);}
+ // Post-process stages are opt-in. This prevents uninitialized framebuffer samplers from stopping GeoFS rendering.
 }
 function restoreSceneSettings(){
  if(!S.sceneOriginal)return;const o=S.sceneOriginal;try{SC.highDynamicRange=o.hdr;SC.shadows=o.shadows;if(SC.globe){SC.globe.enableLighting=o.globeLighting;SC.globe.showGroundAtmosphere=o.groundAtmosphere;}const sm=SC.shadowMap;if(sm){sm.enabled=o.shadowEnabled;sm.softShadows=o.softShadows;sm.size=o.shadowSize;sm.maximumDistance=o.shadowMax;sm.darkness=o.shadowDarkness;}}catch(e){console.warn(e);}S.sceneOriginal=null;
+}
+function syncPostStages(){
+ const want={bloom:!!ui.bloom.checked,ao:!!ui.ao.checked};
+ for(const entry of [...S.postStages]){if(!want[entry.kind]){try{SC.postProcessStages.remove(entry.stage);}catch(_){}S.postStages.splice(S.postStages.indexOf(entry),1);}}
+ const lib=C.PostProcessStageLibrary;
+ if(want.bloom&&!S.postStages.some(x=>x.kind==='bloom')){try{if(typeof lib.createBloomStage==='function'){const stage=lib.createBloomStage();stage.enabled=true;SC.postProcessStages.add(stage);S.postStages.push({kind:'bloom',stage});}}catch(e){ui.bloom.checked=false;console.warn('[OSAKA beta v5.136.1] Bloom disabled',e);}}
+ if(want.ao&&!S.postStages.some(x=>x.kind==='ao')){try{if(typeof lib.createAmbientOcclusionStage==='function'&&typeof lib.isAmbientOcclusionSupported==='function'&&lib.isAmbientOcclusionSupported(SC)){const stage=lib.createAmbientOcclusionStage();stage.enabled=true;SC.postProcessStages.add(stage);S.postStages.push({kind:'ao',stage});}else{ui.ao.checked=false;say('このGPU/ブラウザではSSAOを利用できません');}}catch(e){ui.ao.checked=false;console.warn('[OSAKA beta v5.136.1] SSAO disabled',e);}}
+ requestRender();
 }
 function solarNightFactor(){
  if(ui.mode.value==='off'||!ui.lamps.checked)return 0;
@@ -281,14 +277,10 @@ function updateShaderLights(forceSelection=false){
      shader.setUniform(`uLampCP${i}`,new C.Cartesian4(0,0,0,0));
     }
    }
-  }catch(e){console.warn('[OSAKA beta v5.136] light uniform',e);}
+  }catch(e){console.warn('[OSAKA beta v5.136.1] light uniform',e);}
  }
 }
-function makeGlowCanvas(){
- if(S.glowCanvas)return S.glowCanvas;
- const c=document.createElement('canvas');c.width=256;c.height=256;const x=c.getContext('2d');
- const g=x.createRadialGradient(128,128,2,128,128,126);g.addColorStop(0,'rgba(255,210,140,0.48)');g.addColorStop(.18,'rgba(255,184,104,0.30)');g.addColorStop(.48,'rgba(255,156,77,0.12)');g.addColorStop(1,'rgba(255,130,55,0)');x.fillStyle=g;x.fillRect(0,0,256,256);S.glowCanvas=c;return c;
-}
+function glowColor(alpha){return new C.Color(1.0,0.58,0.25,alpha);}
 function clearLampVisuals(){
  for(const id of S.lampEntities){try{V.entities.removeById(id);}catch(_){}}S.lampEntities=[];S.glowEntities=[];
  if(S.pointCollection){try{SC.primitives.remove(S.pointCollection);}catch(_){}S.pointCollection=null;}
@@ -310,8 +302,12 @@ function addLampVisual(lamp){
   const arm=V.entities.add({id:prefix+'_arm',polyline:{positions:[arm0,arm1,head],width:1.8,arcType:C.ArcType.NONE,material:C.Color.fromCssColorString('#30363a')}});S.lampEntities.push(arm.id);
   const hood=V.entities.add({id:prefix+'_hood',position:head,ellipsoid:{radii:new C.Cartesian3(0.30,0.15,0.085),material:C.Color.fromCssColorString('#3b4145'),outline:false}});S.lampEntities.push(hood.id);
   const poolRadius=Math.min(34,Math.max(12,Number(ui.radius.value)*0.52));
-  const pool=V.entities.add({id:prefix+'_pool',position:C.Cartesian3.fromDegrees(lamp.lon,lamp.lat,lamp.ground+0.18),ellipse:{semiMajorAxis:poolRadius,semiMinorAxis:poolRadius*0.78,height:lamp.ground+0.18,material:new C.ImageMaterialProperty({image:makeGlowCanvas(),transparent:true}),outline:false,granularity:C.Math.toRadians(3)}});S.lampEntities.push(pool.id);S.glowEntities.push(pool.id);
- }catch(e){console.warn('[OSAKA beta v5.136] lamp fixture entity',e);}
+  const rings=[{r:1.00,a:0.045},{r:0.78,a:0.060},{r:0.55,a:0.075},{r:0.31,a:0.095}];
+  for(let ri=0;ri<rings.length;ri++){
+   const ring=rings[ri],pool=V.entities.add({id:prefix+'_pool_'+ri,position:C.Cartesian3.fromDegrees(lamp.lon,lamp.lat,lamp.ground+0.15+ri*0.002),ellipse:{semiMajorAxis:poolRadius*ring.r,semiMinorAxis:poolRadius*0.78*ring.r,height:lamp.ground+0.15+ri*0.002,material:glowColor(ring.a),outline:false,granularity:C.Math.toRadians(3)}});
+   S.lampEntities.push(pool.id);S.glowEntities.push(pool.id);
+  }
+ }catch(e){console.warn('[OSAKA beta v5.136.1] lamp fixture entity',e);}
  if(S.pointCollection)S.pointCollection.add({position:head,pixelSize:10,color:new C.Color(1.0,0.82,0.58,0.98),outlineColor:new C.Color(0.18,0.12,0.06,0.9),outlineWidth:1,scaleByDistance:new C.NearFarScalar(80,1.0,5500,0.25),disableDepthTestDistance:0});
 }
 function cameraOrAircraftCenter(){return aircraftLLA()||cameraLLA();}
@@ -340,7 +336,7 @@ async function loadStreetLamps(gen){
  });
  list.sort((a,b)=>haversine(center,a)-haversine(center,b));list=list.slice(0,520);
  const cartos=list.map(l=>C.Cartographic.fromDegrees(l.lon,l.lat));
- try{if(C.sampleTerrainMostDetailed&&V.terrainProvider){const sampled=await C.sampleTerrainMostDetailed(V.terrainProvider,cartos);for(let i=0;i<list.length;i++)if(Number.isFinite(sampled[i]?.height))list[i].ground=sampled[i].height;}}catch(e){console.warn('[OSAKA beta v5.136] terrain sample fallback',e);}
+ try{if(C.sampleTerrainMostDetailed&&V.terrainProvider){const sampled=await C.sampleTerrainMostDetailed(V.terrainProvider,cartos);for(let i=0;i<list.length;i++)if(Number.isFinite(sampled[i]?.height))list[i].ground=sampled[i].height;}}catch(e){console.warn('[OSAKA beta v5.136.1] terrain sample fallback',e);}
  for(let i=0;i<list.length;i++)if(!Number.isFinite(list[i].ground)){const h=SC.globe.getHeight?.(cartos[i]);list[i].ground=Number.isFinite(h)?h:0;}
  for(const lamp of list)lamp.ecef=C.Cartesian3.fromDegrees(lamp.lon,lamp.lat,lamp.ground+lamp.height,C.Ellipsoid.WGS84);
  if(gen!==S.generation||S.stopped)return;
@@ -360,7 +356,7 @@ function activateManualPlacement(){
  say(S.placing?'照明を置く地面をタップしてください。':'照明配置モードを終了しました');
 }
 function setupInput(){
- try{S.mouseHandler=new C.ScreenSpaceEventHandler(SC.canvas);S.mouseHandler.setInputAction(m=>{if(!S.placing)return;let p=null;try{if(SC.pickPositionSupported)p=SC.pickPosition(m.position);}catch(_){}if(!p){const ray=SC.camera.getPickRay(m.position);if(ray)p=SC.globe.pick(ray,SC);}if(!p)return;const c=C.Cartographic.fromCartesian(p);if(c)addManualLamp(c);},C.ScreenSpaceEventType.LEFT_CLICK);}catch(e){console.warn('[OSAKA beta v5.136] manual lamp picker',e);}
+ try{S.mouseHandler=new C.ScreenSpaceEventHandler(SC.canvas);S.mouseHandler.setInputAction(m=>{if(!S.placing)return;let p=null;try{if(SC.pickPositionSupported)p=SC.pickPosition(m.position);}catch(_){}if(!p){const ray=SC.camera.getPickRay(m.position);if(ray)p=SC.globe.pick(ray,SC);}if(!p)return;const c=C.Cartographic.fromCartesian(p);if(c)addManualLamp(c);},C.ScreenSpaceEventType.LEFT_CLICK);}catch(e){console.warn('[OSAKA beta v5.136.1] manual lamp picker',e);}
 }
 function aircraftDistanceToModel(origin){const p=aircraftLLA();return p?haversine(p,origin):0;}
 async function fetchTree(){if(S.tree&&Date.now()-S.treeAt<300000)return S.tree;const r=await fetch(TREE,{cache:'no-store',headers:{Accept:'application/vnd.github+json'}});if(!r.ok)throw new Error('OSAKA GitHub tree HTTP '+r.status);const j=await r.json();if(!Array.isArray(j.tree)||j.truncated)throw new Error('OSAKA GitHub treeが不完全です');S.tree=j.tree;S.treeAt=Date.now();return j.tree;}
@@ -392,8 +388,8 @@ async function addOwnGlb(file,kind,gen){if(S.loads.has(file.path))return;S.loads
  if(m.upAxis==='Z')opts.upAxis=C.Axis.Z;else if(m.upAxis==='X')opts.upAxis=C.Axis.X;
  model=await C.Model.fromGltfAsync(opts);if(gen!==S.generation||S.stopped){try{model.destroy();}catch(_){}return;}SC.primitives.add(model);S.models.push({obj:model,kind,path:file.path});
  if(model.imageBasedLighting?.imageBasedLightingFactor)model.imageBasedLighting.imageBasedLightingFactor=new C.Cartesian2(0.9,0.65);
- model.shadows=C.ShadowMode.ENABLED;S.loaded[kind]++;say(`${kind==='roads'?'高速道路':'線路'} PBRモデル読込：${file.path}`);requestRender();
- }catch(e){if(shader&&!S.shaders.includes(shader)){try{shader.destroy();}catch(_){}}S.failed.push(file.path+'：'+(e.message||e));console.warn('[OSAKA beta v5.136] GLB',file.path,e);}
+ model.shadows=C.ShadowMode.ENABLED;S.loaded[kind]++;say(`${kind==='roads'?'高速道路':'線路'} Procedural PBRモデル読込：${file.path}`);requestRender();
+ }catch(e){if(shader&&!S.shaders.includes(shader)){try{shader.destroy();}catch(_){}}S.failed.push(file.path+'：'+(e.message||e));console.warn('[OSAKA beta v5.136.1] GLB',file.path,e);}
 }
 async function loadOwnModels(gen){
  if(ui.roads.checked)await addOwnGlb(EXPRESSWAY,'roads',gen);
@@ -401,7 +397,7 @@ async function loadOwnModels(gen){
 }
 async function loadBuildings(gen){
  if(!ui.buildings.checked)return;
- await loadPbrMaps();if(gen!==S.generation||S.stopped)return;
+ if(gen!==S.generation||S.stopped)return;
  const shader=createSurfaceShader({facade:true,kind:'building'});S.shaders.push(shader);
  let last;
  for(const lod of [ui.lod.value]){
@@ -413,18 +409,18 @@ async function loadBuildings(gen){
    try{tileset.tileFailed.addEventListener(onTileFailed);S.tileListeners.push(()=>tileset.tileFailed.removeEventListener(onTileFailed));}catch(_){}
    try{tileset.tileLoad.addEventListener(onTileLoad);S.tileListeners.push(()=>tileset.tileLoad.removeEventListener(onTileLoad));}catch(_){}
    SC.primitives.add(tileset);S.tiles.push({obj:tileset,kind:'buildings'});tileset.shadows=C.ShadowMode.ENABLED;S.loaded.buildings++;say(`PLATEAU大阪府 建物 ${lod} 読み込み完了。タイル読込イベント監視中`);requestRender();return;
-  }catch(e){last=e;if(tileset){try{SC.primitives.remove(tileset);}catch(_){}}console.warn('[OSAKA beta v5.136] PLATEAU',lod,e);}
+  }catch(e){last=e;if(tileset){try{SC.primitives.remove(tileset);}catch(_){}}console.warn('[OSAKA beta v5.136.1] PLATEAU',lod,e);}
  }
  throw last||new Error('PLATEAU tilesetを読み込めません');
 }
 async function start(){
- if(S.active){say('読み込み中です');return;}if(S.tiles.length||S.models.length||S.shaders.length){say('既にモデルがあります。「停止・削除」してから再読み込みしてください');return;}S.active=true;S.stopped=false;S.generation++;const gen=S.generation;S.failed=[];S.loads.clear();S.loaded={buildings:0,roads:0,rails:0};say('照明点・PBRマップ・PLATEAUを準備中…');
+ if(S.active){say('読み込み中です');return;}if(S.tiles.length||S.models.length||S.shaders.length){say('既にモデルがあります。「停止・削除」してから再読み込みしてください');return;}S.active=true;S.stopped=false;S.generation++;const gen=S.generation;S.failed=[];S.loads.clear();S.loaded={buildings:0,roads:0,rails:0};say('照明点・手続き生成PBR・PLATEAUを準備中…');
  saveSceneSettings();
  if(!S.preUpdate){S.preUpdate=()=>{updateShaderLights();if(ui.lamps.checked){const c=cameraOrAircraftCenter();if(c&&S.lastLampCenter&&haversine(c,S.lastLampCenter)>2200&&Date.now()-S.lastLampFetch>45000&&!S.fetchingLamps){S.fetchingLamps=true;loadStreetLamps(S.generation).catch(e=>console.warn(e)).finally(()=>S.fetchingLamps=false);}}};SC.preUpdate.addEventListener(S.preUpdate);}
  try{setupInput();if(ui.lamps.checked){S.fetchingLamps=true;try{await loadStreetLamps(gen);}catch(e){S.failed.push('街灯：'+(e.message||e));say('街灯取得失敗。手動の照明配置も使用できます');}finally{S.fetchingLamps=false;}}
   const tasks=[];if(ui.buildings.checked)tasks.push(loadBuildings(gen).catch(e=>{S.failed.push('PLATEAU建物：'+(e.message||e));}));if(ui.roads.checked||ui.rails.checked)tasks.push(loadOwnModels(gen).catch(e=>{S.failed.push('OSAKAモデル：'+(e.message||e));}));await Promise.all(tasks);
  }catch(e){S.failed.push(e.message||String(e));}if(gen!==S.generation||S.stopped)return;S.active=false;
- say(`完了：PLATEAU建物 ${S.loaded.buildings} / 高速道路 ${S.loaded.roads} / 線路 ${S.loaded.rails} / 街灯 ${S.lampData.length}。失敗・除外 ${S.failed.length}件`);if(S.failed.length)console.warn('[OSAKA beta v5.136] 詳細',S.failed);requestRender();
+ say(`完了：PLATEAU建物 ${S.loaded.buildings} / 高速道路 ${S.loaded.roads} / 線路 ${S.loaded.rails} / 街灯 ${S.lampData.length}。失敗・除外 ${S.failed.length}件`);if(S.failed.length)console.warn('[OSAKA beta v5.136.1] 詳細',S.failed);requestRender();
 }
 function stop(){
  S.stopped=true;S.active=false;S.generation++;S.placing=false;$('ob5Place').textContent='タップで照明を追加';for(const off of S.tileListeners){try{off();}catch(_){}}S.tileListeners=[];
@@ -433,15 +429,15 @@ function stop(){
  if(S.mouseHandler){try{S.mouseHandler.destroy();}catch(_){}S.mouseHandler=null;}
  clearLampVisuals();S.lampData=[];
  for(const sh of S.shaders){try{if(!sh.isDestroyed?.())sh.destroy();}catch(_){}}S.shaders=[];
- for(const st of S.postStages){try{SC.postProcessStages.remove(st);}catch(_){}}S.postStages=[];
- for(const u of S.blobUrls){try{URL.revokeObjectURL(u);}catch(_){}}S.blobUrls=[];S.loads.clear();S.pbr=null;S.glowCanvas=null;S.lastLampCenter=null;S.lastLampFetch=0;S.activeLampSet=[];S.lastLampSelectionCenter=null;S.lastLampSelectionAt=0;restoreSceneSettings();say('追加したPLATEAU・OSAKAモデル・照明を削除しました');requestRender();
+ for(const entry of S.postStages){try{SC.postProcessStages.remove(entry.stage);}catch(_){}}S.postStages=[];ui.bloom.checked=false;ui.ao.checked=false;
+ for(const u of S.blobUrls){try{URL.revokeObjectURL(u);}catch(_){}}S.blobUrls=[];S.loads.clear();S.lastLampCenter=null;S.lastLampFetch=0;S.activeLampSet=[];S.lastLampSelectionCenter=null;S.lastLampSelectionAt=0;restoreSceneSettings();say('追加したPLATEAU・OSAKAモデル・照明を削除しました');requestRender();
 }
 $('ob5Start').onclick=start;$('ob5Stop').onclick=stop;$('ob5Place').onclick=activateManualPlacement;
 ui.lamps.addEventListener('change',()=>{if(!ui.lamps.checked){S.lampData=[];S.activeLampSet=[];S.lastLampSelectionAt=0;clearLampVisuals();}else if(S.active){loadStreetLamps(S.generation).catch(e=>say('街灯取得失敗：'+e.message));}requestRender();});
-ui.mode.addEventListener('change',requestRender);
+ui.mode.addEventListener('change',requestRender);ui.bloom.addEventListener('change',syncPostStages);ui.ao.addEventListener('change',syncPostStages);
 ui.buildings.addEventListener('change',()=>S.tiles.filter(x=>x.kind==='buildings').forEach(x=>x.obj.show=ui.buildings.checked));
 ui.roads.addEventListener('change',()=>S.models.filter(x=>x.kind==='roads').forEach(x=>x.obj.show=ui.roads.checked));
 ui.rails.addEventListener('change',()=>S.models.filter(x=>x.kind==='rails').forEach(x=>x.obj.show=ui.rails.checked));
 S.stop=stop;S.start=start;S.state=S;window[KEY]=S;
-say(`準備完了。CesiumJS ${C.VERSION} / fromUrl・fromGltfAsync・TextureUniform・PBR CustomShader確認済み。建物PLATEAU / 道路・線路OSAKA`);
+say(`準備完了。CesiumJS ${C.VERSION} / fromUrl・fromGltfAsync・Samplerなし手続きPBR CustomShader確認済み。Bloom/SSAOは任意。建物PLATEAU / 道路・線路OSAKA`);
 })();
